@@ -178,6 +178,9 @@ pub fn run_tui(config: &Config) -> Result<TuiResult> {
         guard.terminal.draw(|f| draw(f, &app))?;
 
         if let Event::Key(key) = event::read()? {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                return Ok(TuiResult::Cancelled);
+            }
             match &app.mode {
                 Mode::Browse => match handle_browse_key(&mut app, key) {
                     BrowseAction::Continue => {}
