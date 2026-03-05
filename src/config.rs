@@ -28,6 +28,15 @@ impl Config {
     /// If the file does not exist, returns defaults. If it exists but is
     /// malformed, returns an error.
     pub fn load() -> Result<Self> {
+        // Prefer ~/.config (XDG) over platform default (~/Library/Application Support on macOS)
+        let xdg_path = dirs::home_dir()
+            .map(|h| h.join(".config").join("shade").join("config.toml"));
+        if let Some(ref path) = xdg_path {
+            if path.exists() {
+                return Self::load_from(path);
+            }
+        }
+
         let config_dir = dirs::config_dir()
             .context("could not determine config directory")?;
         let config_path = config_dir.join("shade").join("config.toml");
