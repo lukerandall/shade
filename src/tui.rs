@@ -235,21 +235,19 @@ enum BrowseAction {
 fn handle_browse_key(app: &mut App, key: KeyEvent) -> BrowseAction {
     match key.code {
         KeyCode::Esc => BrowseAction::Cancel,
-        KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() || matches!(key.code, KeyCode::Up) => {
-            // Only treat 'k' as navigation if we aren't typing a filter
-            // Actually, since typing adds to filter, we need 'k' for filtering too.
-            // Let's only use Up/Down for nav, and j/k only without filter text.
-            if matches!(key.code, KeyCode::Up) {
-                app.move_up();
-                BrowseAction::Continue
-            } else {
-                // 'k' pressed - add to filter
-                app.filter.push('k');
-                app.apply_filter();
-                BrowseAction::Continue
-            }
+        KeyCode::Up => {
+            app.move_up();
+            BrowseAction::Continue
         }
         KeyCode::Down => {
+            app.move_down();
+            BrowseAction::Continue
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.move_up();
+            BrowseAction::Continue
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.move_down();
             BrowseAction::Continue
         }
