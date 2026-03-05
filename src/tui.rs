@@ -288,10 +288,9 @@ fn handle_create_key(app: &mut App, key: KeyEvent) -> CreateAction {
         KeyCode::Esc => CreateAction::Cancel,
         KeyCode::Enter => {
             let slugified = slug::slugify(&app.create_input);
-            if slugified.is_empty() {
-                CreateAction::Continue
-            } else {
-                CreateAction::Submit(slugified)
+            match slug::validate_slug(&slugified) {
+                Ok(()) => CreateAction::Submit(slugified),
+                Err(_) => CreateAction::Continue,
             }
         }
         KeyCode::Backspace => {
