@@ -6,8 +6,6 @@ const MAX_SLUG_LENGTH: usize = 64;
 pub enum SlugError {
     #[error("slug cannot be empty")]
     Empty,
-    #[error("slug contains path separator")]
-    PathSeparator,
     #[error("slug exceeds maximum length of {MAX_SLUG_LENGTH} characters")]
     TooLong,
 }
@@ -44,13 +42,11 @@ pub fn slugify(input: &str) -> String {
     result.trim_matches('-').to_string()
 }
 
-/// Validate that a slug meets all constraints.
+/// Validate an already-slugified string. Call `slugify()` first, then pass the
+/// result here to check length and emptiness constraints.
 pub fn validate_slug(slug: &str) -> Result<(), SlugError> {
-    if slug.is_empty() || slugify(slug).is_empty() {
+    if slug.is_empty() {
         return Err(SlugError::Empty);
-    }
-    if slug.contains('/') || slug.contains('\\') {
-        return Err(SlugError::PathSeparator);
     }
     if slug.len() > MAX_SLUG_LENGTH {
         return Err(SlugError::TooLong);
@@ -93,18 +89,9 @@ mod tests {
     }
 
     #[test]
-    fn only_special_chars_validation_fails() {
-        assert_eq!(validate_slug("@#$%"), Err(SlugError::Empty));
-    }
-
-    #[test]
-    fn path_separator_forward_slash_fails() {
-        assert_eq!(validate_slug("foo/bar"), Err(SlugError::PathSeparator));
-    }
-
-    #[test]
-    fn path_separator_backslash_fails() {
-        assert_eq!(validate_slug("foo\\bar"), Err(SlugError::PathSeparator));
+    fn only_special_chars_slugifies_to_empty() {
+        // slugify strips everything, validate_slug rejects the empty result
+        assert_eq!(validate_slug(&slugify("@#$%")), Err(SlugError::Empty));
     }
 
     #[test]

@@ -105,8 +105,12 @@ pub fn create_environment(env_dir: &str, label: &str) -> Result<Environment> {
         return Err(EnvError::AlreadyExists(name).into());
     }
 
-    std::fs::create_dir_all(&env_path)
-        .with_context(|| format!("failed to create environment directory: {}", env_path.display()))?;
+    std::fs::create_dir_all(&env_path).with_context(|| {
+        format!(
+            "failed to create environment directory: {}",
+            env_path.display()
+        )
+    })?;
 
     Ok(Environment {
         name,

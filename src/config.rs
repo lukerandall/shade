@@ -29,16 +29,15 @@ impl Config {
     /// malformed, returns an error.
     pub fn load() -> Result<Self> {
         // Prefer ~/.config (XDG) over platform default (~/Library/Application Support on macOS)
-        let xdg_path = dirs::home_dir()
-            .map(|h| h.join(".config").join("shade").join("config.toml"));
-        if let Some(ref path) = xdg_path {
-            if path.exists() {
-                return Self::load_from(path);
-            }
+        let xdg_path =
+            dirs::home_dir().map(|h| h.join(".config").join("shade").join("config.toml"));
+        if let Some(ref path) = xdg_path
+            && path.exists()
+        {
+            return Self::load_from(path);
         }
 
-        let config_dir = dirs::config_dir()
-            .context("could not determine config directory")?;
+        let config_dir = dirs::config_dir().context("could not determine config directory")?;
         let config_path = config_dir.join("shade").join("config.toml");
         Self::load_from(&config_path)
     }
@@ -88,10 +87,10 @@ fn expand_tilde(path: &str) -> String {
             .to_string();
     }
 
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().to_string();
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest).to_string_lossy().to_string();
     }
 
     path.to_string()

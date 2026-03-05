@@ -1,17 +1,17 @@
 use anyhow::Result;
 use crossterm::{
+    ExecutableCommand,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
 };
 use jiff::civil::Date;
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
-    Frame, Terminal,
 };
 use std::io::{self, Stdout};
 
@@ -267,10 +267,10 @@ fn handle_browse_key(app: &mut App, key: KeyEvent) -> BrowseAction {
             }
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if !app.is_create_selected() {
-                if let Some(&idx) = app.filtered_indices.get(app.cursor) {
-                    app.mode = Mode::DeleteConfirm(idx);
-                }
+            if !app.is_create_selected()
+                && let Some(&idx) = app.filtered_indices.get(app.cursor)
+            {
+                app.mode = Mode::DeleteConfirm(idx);
             }
             BrowseAction::Continue
         }
@@ -345,7 +345,7 @@ fn draw(f: &mut Frame, app: &App) {
         Constraint::Length(1), // Title
         Constraint::Length(1), // Search bar
         Constraint::Length(1), // Blank line
-        Constraint::Min(1),   // List
+        Constraint::Min(1),    // List
         Constraint::Length(1), // Help bar
     ])
     .split(area);
@@ -373,10 +373,7 @@ fn draw_search(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = Line::from(vec![
-        Span::styled(
-            label_text,
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled(label_text, Style::default().fg(Color::Yellow)),
         Span::raw(input_text),
     ]);
     let search = Paragraph::new(line);
@@ -405,14 +402,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("? (y/n)", Style::default().fg(Color::Red)),
             ]);
             f.render_widget(Paragraph::new(line), area);
-            return;
         }
-        Mode::CreateInput => {
-            // Show a dimmed list in the background while creating
-            render_env_list(f, app, area);
-            return;
-        }
-        Mode::Browse => {
+        Mode::CreateInput | Mode::Browse => {
             render_env_list(f, app, area);
         }
     }
@@ -452,9 +443,7 @@ fn render_env_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(marker, style_modifier),
             Span::styled(
                 date_part,
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .patch(style_modifier),
+                Style::default().fg(Color::DarkGray).patch(style_modifier),
             ),
             Span::styled(
                 label_part,
@@ -464,10 +453,7 @@ fn render_env_list(f: &mut Frame, app: &App, area: Rect) {
                     .patch(style_modifier),
             ),
             Span::raw(" ".repeat(padding)),
-            Span::styled(
-                age,
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(age, Style::default().fg(Color::DarkGray)),
         ]);
 
         items.push(ListItem::new(line));
