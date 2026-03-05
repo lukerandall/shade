@@ -185,6 +185,9 @@ pub fn run_tui(config: &Config) -> Result<TuiResult> {
                         let env = app.environments[idx].clone();
                         return Ok(TuiResult::Selected(env));
                     }
+                    BrowseAction::CreateWithName(label) => {
+                        return Ok(TuiResult::Create(label));
+                    }
                     BrowseAction::EnterCreate => {
                         app.mode = Mode::CreateInput;
                         app.create_input.clear();
@@ -222,6 +225,7 @@ enum BrowseAction {
     Continue,
     SelectEnv(usize),
     EnterCreate,
+    CreateWithName(String),
     Cancel,
 }
 
@@ -248,7 +252,13 @@ fn handle_browse_key(app: &mut App, key: KeyEvent) -> BrowseAction {
         }
         KeyCode::Enter => {
             if app.is_create_selected() {
-                BrowseAction::EnterCreate
+                // If there's already text in the filter, use it as the name
+                let slugified = slug::slugify(&app.filter);
+                if slug::validate_slug(&slugified).is_ok() {
+                    BrowseAction::CreateWithName(slugified)
+                } else {
+                    BrowseAction::EnterCreate
+                }
             } else if let Some(&idx) = app.filtered_indices.get(app.cursor) {
                 BrowseAction::SelectEnv(idx)
             } else {
