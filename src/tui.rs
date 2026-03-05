@@ -487,9 +487,20 @@ fn render_env_list(f: &mut Frame, app: &App, area: Rect) {
         items.push(ListItem::new(Line::raw("")));
     }
 
+    let create_label = if !app.filter.is_empty() {
+        let slugified = slug::slugify(&app.filter);
+        if slugified.is_empty() {
+            "+ Create new".to_string()
+        } else {
+            format!("+ Create new: {}", slugified)
+        }
+    } else {
+        "+ Create new".to_string()
+    };
+
     items.push(ListItem::new(Line::from(vec![
         Span::styled(create_marker, create_style),
-        Span::styled("+ Create new", create_style),
+        Span::styled(create_label, create_style),
     ])));
 
     let list = List::new(items);
