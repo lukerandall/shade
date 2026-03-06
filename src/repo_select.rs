@@ -17,6 +17,7 @@ use std::io::{self, Stdout};
 use crate::vcs::Repo;
 
 pub enum RepoSelectResult {
+    /// Repos to add (newly selected, excluding already-existing ones).
     Selected(Vec<Repo>),
     Cancelled,
 }
@@ -24,20 +25,28 @@ pub enum RepoSelectResult {
 struct App {
     repos: Vec<Repo>,
     selected: Vec<bool>,
+    /// Repos that already have workspaces in this shade — shown as pre-selected and locked.
+    existing: Vec<bool>,
     cursor: usize,
     filter: String,
     filtered_indices: Vec<usize>,
 }
 
 impl App {
-    fn new(repos: Vec<Repo>, default_repo: Option<&str>) -> Self {
+    fn new(repos: Vec<Repo>, default_repo: Option<&str>, existing_repos: &[String]) -> Self {
+        let existing: Vec<bool> = repos
+            .iter()
+            .map(|r| existing_repos.contains(&r.name))
+            .collect();
         let selected: Vec<bool> = repos
             .iter()
-            .map(|r| default_repo.is_some_and(|d| r.name == d))
+            .enumerate()
+            .map(|(i, r)| existing[i] || default_repo.is_some_and(|d| r.name == d))
             .collect();
         let mut app = Self {
             repos,
             selected,
+            existing,
             cursor: 0,
             filter: String::new(),
             filtered_indices: Vec::new(),
@@ -75,17 +84,19 @@ impl App {
     }
 
     fn toggle_current(&mut self) {
-        if let Some(&idx) = self.filtered_indices.get(self.cursor) {
+        if let Some(&idx) = self.filtered_indices.get(self.cursor)
+            && !self.existing[idx]
+        {
             self.selected[idx] = !self.selected[idx];
             self.apply_filter();
         }
     }
 
-    fn selected_repos(&self) -> Vec<Repo> {
+    fn newly_selected_repos(&self) -> Vec<Repo> {
         self.repos
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.selected[*i])
+            .filter(|(i, _)| self.selected[*i] && !self.existing[*i])
             .map(|(_, r)| r.clone())
             .collect()
     }
@@ -118,9 +129,11 @@ impl Drop for TerminalGuard {
 
 /// Run the repo multi-select TUI.
 /// `default_repo` is the name of the repo to pre-select (e.g. the one the user launched from).
+/// `existing_repos` are repos that already have workspaces — shown as locked/pre-selected.
 pub fn run_repo_select(
     repos: Vec<Repo>,
     default_repo: Option<&str>,
+    existing_repos: &[String],
 ) -> Result<RepoSelectResult> {
     if repos.is_empty() {
         anyhow::bail!("no repositories found in configured code_dirs");
@@ -133,7 +146,7 @@ pub fn run_repo_select(
     let terminal = Terminal::new(backend)?;
 
     let mut guard = TerminalGuard { terminal };
-    let mut app = App::new(repos, default_repo);
+    let mut app = App::new(repos, default_repo, existing_repos);
 
     loop {
         guard.terminal.draw(|f| draw(f, &app))?;
@@ -145,7 +158,7 @@ pub fn run_repo_select(
             match handle_key(&mut app, key) {
                 Action::Continue => {}
                 Action::Confirm => {
-                    return Ok(RepoSelectResult::Selected(app.selected_repos()));
+                    return Ok(RepoSelectResult::Selected(app.newly_selected_repos()));
                 }
                 Action::Cancel => return Ok(RepoSelectResult::Cancelled),
             }
@@ -194,13 +207,16 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::Continue
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Toggle all visible
+            // Toggle all visible (skip existing)
             let all_selected = app
                 .filtered_indices
                 .iter()
+                .filter(|&&i| !app.existing[i])
                 .all(|&i| app.selected[i]);
             for &i in &app.filtered_indices {
-                app.selected[i] = !all_selected;
+                if !app.existing[i] {
+                    app.selected[i] = !all_selected;
+                }
             }
             app.apply_filter();
             Action::Continue
@@ -221,7 +237,7 @@ fn draw(f: &mut Frame, app: &App) {
         Constraint::Length(1), // Title
         Constraint::Length(1), // Search
         Constraint::Length(1), // Blank
-        Constraint::Min(1),   // List
+        Constraint::Min(1),    // List
         Constraint::Length(1), // Help
     ])
     .split(area);
@@ -274,12 +290,21 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|(list_idx, &repo_idx)| {
             let repo = &app.repos[repo_idx];
             let is_selected = app.selected[repo_idx];
+            let is_existing = app.existing[repo_idx];
             let is_cursor = list_idx == app.cursor;
 
             let marker = if is_cursor { "> " } else { "  " };
-            let checkbox = if is_selected { "[x] " } else { "[ ] " };
+            let checkbox = if is_existing || is_selected {
+                "[x] "
+            } else {
+                "[ ] "
+            };
 
-            let style = if is_cursor {
+            let style = if is_existing {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else if is_cursor {
                 Style::default().fg(Color::Cyan)
             } else if is_selected {
                 Style::default().fg(Color::White)
@@ -287,10 +312,18 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray)
             };
 
+            let suffix = if is_existing { " (existing)" } else { "" };
+
             let line = Line::from(vec![
                 Span::styled(marker, style),
                 Span::styled(checkbox, style),
                 Span::styled(&repo.name, style),
+                Span::styled(
+                    suffix,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
             ]);
             ListItem::new(line)
         })

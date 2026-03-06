@@ -23,6 +23,18 @@ struct Cli {
     repos: bool,
 }
 
+fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(env_path) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| e.path().join(".jj").is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect()
+}
+
 fn select_and_create_workspaces(
     vcs: &impl Vcs,
     config: &config::Config,
@@ -34,11 +46,12 @@ fn select_and_create_workspaces(
         return Ok(());
     }
 
+    let existing = detect_existing_workspaces(env_path);
     let current_repo = std::env::current_dir()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
-    match repo_select::run_repo_select(repos, current_repo.as_deref())? {
+    match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
             for repo in &selected {
                 print!("Creating workspace for {}... ", repo.name);
@@ -61,12 +74,7 @@ fn main() -> Result<()> {
     match tui::run_tui(&config)? {
         tui::TuiResult::Selected(environment) => {
             if cli.repos {
-                select_and_create_workspaces(
-                    &vcs,
-                    &config,
-                    &environment.path,
-                    &environment.label,
-                )?;
+                select_and_create_workspaces(&vcs, &config, &environment.path, &environment.label)?;
             }
             println!("{}", environment.path.display());
         }

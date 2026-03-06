@@ -191,11 +191,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
 
-        fs::write(
-            &config_path,
-            "code_dirs = [\"/projects\", \"~/work\"]\n",
-        )
-        .unwrap();
+        fs::write(&config_path, "code_dirs = [\"/projects\", \"~/work\"]\n").unwrap();
 
         let config = Config::load_from(&config_path).unwrap();
 
