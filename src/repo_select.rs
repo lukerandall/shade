@@ -145,12 +145,7 @@ pub fn run_repo_select(
             match handle_key(&mut app, key) {
                 Action::Continue => {}
                 Action::Confirm => {
-                    let selected = app.selected_repos();
-                    if selected.is_empty() {
-                        // Don't allow confirming with nothing selected
-                        continue;
-                    }
-                    return Ok(RepoSelectResult::Selected(selected));
+                    return Ok(RepoSelectResult::Selected(app.selected_repos()));
                 }
                 Action::Cancel => return Ok(RepoSelectResult::Cancelled),
             }
