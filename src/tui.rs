@@ -161,7 +161,10 @@ impl Drop for TerminalGuard {
 }
 
 /// Run the interactive TUI and return the user's choice.
-pub fn run_tui(config: &Config) -> Result<TuiResult> {
+pub fn run_tui(
+    config: &Config,
+    on_delete: impl Fn(&Environment) -> Result<()>,
+) -> Result<TuiResult> {
     let environments = env::list_environments(&config.env_dir)?;
 
     // Set up terminal
@@ -214,7 +217,7 @@ pub fn run_tui(config: &Config) -> Result<TuiResult> {
                         Mode::DeleteConfirm(i) => i,
                         _ => unreachable!(),
                     };
-                    match handle_delete_key(&mut app, key, idx)? {
+                    match handle_delete_key(&mut app, key, idx, &on_delete)? {
                         DeleteAction::Continue => {}
                         DeleteAction::Done => {}
                     }
@@ -321,11 +324,16 @@ enum DeleteAction {
     Done,
 }
 
-fn handle_delete_key(app: &mut App, key: KeyEvent, env_idx: usize) -> Result<DeleteAction> {
+fn handle_delete_key(
+    app: &mut App,
+    key: KeyEvent,
+    env_idx: usize,
+    on_delete: &impl Fn(&Environment) -> Result<()>,
+) -> Result<DeleteAction> {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let env = &app.environments[env_idx];
-            env::delete_environment(env)?;
+            on_delete(env)?;
             app.mode = Mode::Browse;
             app.refresh_environments()?;
             Ok(DeleteAction::Done)

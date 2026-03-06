@@ -66,12 +66,40 @@ fn select_and_create_workspaces(
     Ok(())
 }
 
+fn delete_shade(
+    environment: &env::Environment,
+    vcs: &impl Vcs,
+    config: &config::Config,
+) -> Result<()> {
+    // Find workspace directories inside the shade and forget them in the source repos
+    let workspace_names = detect_existing_workspaces(&environment.path);
+    if !workspace_names.is_empty() {
+        let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
+        for ws_name in &workspace_names {
+            if let Some(repo) = repos.iter().find(|r| &r.name == ws_name) {
+                match vcs.remove_workspace(repo, &environment.label) {
+                    Ok(()) => eprintln!("Forgot workspace for {}", ws_name),
+                    Err(e) => {
+                        eprintln!("Warning: failed to forget workspace for {}: {}", ws_name, e)
+                    }
+                }
+            }
+        }
+    }
+
+    env::delete_environment(environment)?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = config::Config::load()?;
     let vcs = JjVcs;
 
-    match tui::run_tui(&config)? {
+    let delete_handler =
+        |environment: &env::Environment| -> Result<()> { delete_shade(environment, &vcs, &config) };
+
+    match tui::run_tui(&config, delete_handler)? {
         tui::TuiResult::Selected(environment) => {
             if cli.repos {
                 select_and_create_workspaces(&vcs, &config, &environment.path, &environment.label)?;
