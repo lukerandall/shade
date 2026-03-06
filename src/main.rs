@@ -77,12 +77,8 @@ fn delete_shade(
         let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
         for ws_name in &workspace_names {
             if let Some(repo) = repos.iter().find(|r| &r.name == ws_name) {
-                match vcs.remove_workspace(repo, &environment.label) {
-                    Ok(()) => eprintln!("Forgot workspace for {}", ws_name),
-                    Err(e) => {
-                        eprintln!("Warning: failed to forget workspace for {}: {}", ws_name, e)
-                    }
-                }
+                // Silently forget — we're inside the TUI, can't print
+                let _ = vcs.remove_workspace(repo, &environment.label);
             }
         }
     }
