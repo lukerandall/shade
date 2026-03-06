@@ -12,7 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
 };
-use std::io::{self, Stdout};
+use std::io::{self, Stderr};
 
 use crate::vcs::Repo;
 
@@ -116,7 +116,7 @@ impl App {
 }
 
 struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+    terminal: Terminal<CrosstermBackend<Stderr>>,
 }
 
 impl Drop for TerminalGuard {
@@ -140,9 +140,9 @@ pub fn run_repo_select(
     }
 
     terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut stderr = io::stderr();
+    stderr.execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stderr);
     let terminal = Terminal::new(backend)?;
 
     let mut guard = TerminalGuard { terminal };

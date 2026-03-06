@@ -13,7 +13,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
 };
-use std::io::{self, Stdout};
+use std::io::{self, Stderr};
 
 use crate::config::Config;
 use crate::env::{self, Environment};
@@ -149,7 +149,7 @@ fn format_relative_date(date: Date, today: Date) -> String {
 
 /// A drop guard that restores the terminal when dropped.
 struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+    terminal: Terminal<CrosstermBackend<Stderr>>,
 }
 
 impl Drop for TerminalGuard {
@@ -167,11 +167,11 @@ pub fn run_tui(
 ) -> Result<TuiResult> {
     let environments = env::list_environments(&config.env_dir)?;
 
-    // Set up terminal
+    // Use stderr for TUI so stdout stays clean for path output
     terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut stderr = io::stderr();
+    stderr.execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stderr);
     let terminal = Terminal::new(backend)?;
 
     let mut guard = TerminalGuard { terminal };
