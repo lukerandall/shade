@@ -13,6 +13,7 @@ pub struct Repo {
 }
 
 /// VCS operations needed by shade.
+#[allow(dead_code)]
 pub trait Vcs {
     /// Find repositories in the given directories.
     fn discover_repos(&self, dirs: &[String]) -> Result<Vec<Repo>>;
