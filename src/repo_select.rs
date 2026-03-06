@@ -35,14 +35,15 @@ impl App {
             .iter()
             .map(|r| default_repo.is_some_and(|d| r.name == d))
             .collect();
-        let filtered_indices = (0..repos.len()).collect();
-        Self {
+        let mut app = Self {
             repos,
             selected,
             cursor: 0,
             filter: String::new(),
-            filtered_indices,
-        }
+            filtered_indices: Vec::new(),
+        };
+        app.apply_filter();
+        app
     }
 
     fn apply_filter(&mut self) {
@@ -60,6 +61,13 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
+        // Sort: selected first, then alphabetically by name
+        self.filtered_indices.sort_by(|&a, &b| {
+            self.selected[b]
+                .cmp(&self.selected[a])
+                .then_with(|| self.repos[a].name.cmp(&self.repos[b].name))
+        });
+
         let max = self.filtered_indices.len().saturating_sub(1);
         if self.cursor > max {
             self.cursor = max;
@@ -69,6 +77,7 @@ impl App {
     fn toggle_current(&mut self) {
         if let Some(&idx) = self.filtered_indices.get(self.cursor) {
             self.selected[idx] = !self.selected[idx];
+            self.apply_filter();
         }
     }
 
@@ -198,6 +207,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             for &i in &app.filtered_indices {
                 app.selected[i] = !all_selected;
             }
+            app.apply_filter();
             Action::Continue
         }
         KeyCode::Char(c) => {
