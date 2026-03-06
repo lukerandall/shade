@@ -14,6 +14,9 @@ use vcs::jj::JjVcs;
 #[derive(Parser)]
 #[command(name = "shade", about = "Ephemeral development environments")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Skip the repo selection step when creating a new shade
     #[arg(short = 'R', long = "skip-repos")]
     skip_repos: bool,
@@ -21,6 +24,19 @@ struct Cli {
     /// Prompt for repo selection even when selecting an existing shade
     #[arg(short = 'r', long = "repos")]
     repos: bool,
+
+    /// Print the selected path instead of cd'ing (for shell integration)
+    #[arg(long = "print-path")]
+    print_path: bool,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Output shell integration for your shell (fish, bash, zsh)
+    Init {
+        /// Shell to generate integration for
+        shell: String,
+    },
 }
 
 fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
@@ -87,8 +103,49 @@ fn delete_shade(
     Ok(())
 }
 
+fn print_shell_init(shell: &str) -> Result<()> {
+    match shell {
+        "fish" => print!(
+            r#"function s --description "Open a shade environment"
+    set -l path (command shade --print-path $argv)
+    if test -n "$path"
+        cd "$path"
+    end
+end
+"#
+        ),
+        "bash" => print!(
+            r#"s() {{
+    local path
+    path="$(command shade --print-path "$@")"
+    if [ -n "$path" ]; then
+        cd "$path" || return
+    fi
+}}
+"#
+        ),
+        "zsh" => print!(
+            r#"s() {{
+    local path
+    path="$(command shade --print-path "$@")"
+    if [[ -n "$path" ]]; then
+        cd "$path" || return
+    fi
+}}
+"#
+        ),
+        _ => anyhow::bail!("unsupported shell: {}. Use fish, bash, or zsh", shell),
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Command::Init { shell }) = &cli.command {
+        return print_shell_init(shell);
+    }
+
     let config = config::Config::load()?;
     let vcs = JjVcs;
 
