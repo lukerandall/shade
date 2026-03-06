@@ -15,11 +15,13 @@ pub enum ConfigError {
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     env_dir: Option<String>,
+    code_dirs: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub env_dir: String,
+    pub code_dirs: Vec<String>,
 }
 
 impl Config {
@@ -61,13 +63,26 @@ impl Config {
             None => Self::default_env_dir(),
         };
 
-        Ok(Config { env_dir })
+        let code_dirs = match raw.code_dirs {
+            Some(dirs) => dirs.iter().map(|d| expand_tilde(d)).collect(),
+            None => Self::default_code_dirs(),
+        };
+
+        Ok(Config { env_dir, code_dirs })
     }
 
     fn defaults() -> Self {
         Config {
             env_dir: Self::default_env_dir(),
+            code_dirs: Self::default_code_dirs(),
         }
+    }
+
+    fn default_code_dirs() -> Vec<String> {
+        let home = dirs::home_dir()
+            .map(|h| h.join("Code"))
+            .unwrap_or_else(|| PathBuf::from("Code"));
+        vec![home.to_string_lossy().to_string()]
     }
 
     fn default_env_dir() -> String {
@@ -109,8 +124,12 @@ mod tests {
 
         let config = Config::load_from(&config_path).unwrap();
 
-        let expected_env_dir = dirs::home_dir().unwrap().join("Shade");
-        assert_eq!(config.env_dir, expected_env_dir.to_string_lossy());
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(config.env_dir, home.join("Shade").to_string_lossy());
+        assert_eq!(
+            config.code_dirs,
+            vec![home.join("Code").to_string_lossy().to_string()]
+        );
     }
 
     #[test]
@@ -159,7 +178,32 @@ mod tests {
 
         let config = Config::load_from(&config_path).unwrap();
 
-        let expected_env_dir = dirs::home_dir().unwrap().join("Shade");
-        assert_eq!(config.env_dir, expected_env_dir.to_string_lossy());
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(config.env_dir, home.join("Shade").to_string_lossy());
+        assert_eq!(
+            config.code_dirs,
+            vec![home.join("Code").to_string_lossy().to_string()]
+        );
+    }
+
+    #[test]
+    fn test_custom_code_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        fs::write(
+            &config_path,
+            "code_dirs = [\"/projects\", \"~/work\"]\n",
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(config.code_dirs[0], "/projects");
+        assert_eq!(
+            config.code_dirs[1],
+            home.join("work").to_string_lossy().to_string()
+        );
     }
 }
