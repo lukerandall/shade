@@ -3,6 +3,8 @@ mod config;
 mod credentials;
 mod docker;
 mod env;
+#[allow(dead_code)]
+mod env_vars;
 mod repo_select;
 mod shade_config;
 mod slug;

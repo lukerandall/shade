@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+use crate::env_vars::EnvValue;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -17,6 +21,8 @@ struct RawConfig {
     env_dir: Option<String>,
     code_dirs: Option<Vec<String>>,
     default_image: Option<String>,
+    #[serde(default)]
+    env: HashMap<String, EnvValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +30,7 @@ pub struct Config {
     pub env_dir: String,
     pub code_dirs: Vec<String>,
     pub default_image: String,
+    pub env: HashMap<String, EnvValue>,
 }
 
 impl Config {
@@ -76,6 +83,7 @@ impl Config {
             env_dir,
             code_dirs,
             default_image,
+            env: raw.env,
         })
     }
 
@@ -84,6 +92,7 @@ impl Config {
             env_dir: Self::default_env_dir(),
             code_dirs: Self::default_code_dirs(),
             default_image: Self::default_image(),
+            env: HashMap::new(),
         }
     }
 

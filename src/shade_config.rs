@@ -1,12 +1,18 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+use crate::env_vars::EnvValue;
 
 const FILENAME: &str = "shade.toml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShadeConfig {
     pub image: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, EnvValue>,
 }
 
 impl ShadeConfig {
@@ -60,6 +66,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = ShadeConfig {
             image: Some("rust:latest".to_string()),
+            ..Default::default()
         };
         config.save(tmp.path()).unwrap();
 
@@ -71,6 +78,7 @@ mod tests {
     fn test_image_or_uses_override() {
         let config = ShadeConfig {
             image: Some("alpine:3".to_string()),
+            ..Default::default()
         };
         assert_eq!(config.image_or("ubuntu:latest"), "alpine:3");
     }
