@@ -1,3 +1,5 @@
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 mod config;
 mod docker;
 mod env;
@@ -66,15 +68,20 @@ fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+pub struct WorkspaceResult {
+    pub name: String,
+    pub error: Option<String>,
+}
+
 fn select_and_create_workspaces(
     vcs: &impl Vcs,
     config: &config::Config,
     env_path: &std::path::Path,
     workspace_name: &str,
-) -> Result<()> {
+) -> Result<Vec<WorkspaceResult>> {
     let repos = vcs.discover_repos(&config.code_dirs)?;
     if repos.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let existing = detect_existing_workspaces(env_path);
@@ -82,19 +89,23 @@ fn select_and_create_workspaces(
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
+    let mut results = Vec::new();
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
             for repo in &selected {
-                eprint!("Creating workspace for {}... ", repo.name);
-                match vcs.create_workspace(repo, env_path, workspace_name) {
-                    Ok(()) => eprintln!("done"),
-                    Err(e) => eprintln!("failed: {}", e),
-                }
+                let error = match vcs.create_workspace(repo, env_path, workspace_name) {
+                    Ok(()) => None,
+                    Err(e) => Some(e.to_string()),
+                };
+                results.push(WorkspaceResult {
+                    name: repo.name.clone(),
+                    error,
+                });
             }
         }
         repo_select::RepoSelectResult::Cancelled => {}
     }
-    Ok(())
+    Ok(results)
 }
 
 fn delete_shade(
@@ -118,7 +129,7 @@ fn delete_shade(
     Ok(())
 }
 
-fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
+fn run_docker_for_current_shade(config: &config::Config) -> Result<docker::DockerAction> {
     let cwd = std::env::current_dir().context("could not determine current directory")?;
     let env_dir = std::path::Path::new(&config.env_dir)
         .canonicalize()
@@ -145,7 +156,7 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
     docker::run_docker(&shade_name, &shade_path, &config.default_image)
 }
 
-fn generate_config() -> Result<()> {
+fn generate_config() -> Result<std::path::PathBuf> {
     let path = config::Config::default_path();
 
     if path.exists() {
@@ -161,72 +172,78 @@ fn generate_config() -> Result<()> {
     std::fs::write(&path, &contents)
         .with_context(|| format!("failed to write config file: {}", path.display()))?;
 
-    eprintln!("Created config file: {}", path.display());
-    Ok(())
+    Ok(path)
 }
 
-fn print_shell_init(shell: &str) -> Result<()> {
+fn shell_init(shell: &str) -> Result<String> {
     match shell {
-        "fish" => print!(
-            r#"function s --description "Open a shade environment"
+        "fish" => Ok(r#"function s --description "Open a shade environment"
     set -l path (command shade new --print-path $argv)
     if test -n "$path"
         cd "$path"
     end
 end
 "#
-        ),
-        "bash" => print!(
-            r#"s() {{
+        .to_string()),
+        "bash" => Ok(r#"s() {
     local path
     path="$(command shade new --print-path "$@")"
     if [ -n "$path" ]; then
         cd "$path" || return
     fi
-}}
+}
 "#
-        ),
-        "zsh" => print!(
-            r#"s() {{
+        .to_string()),
+        "zsh" => Ok(r#"s() {
     local path
     path="$(command shade new --print-path "$@")"
     if [[ -n "$path" ]]; then
         cd "$path" || return
     fi
-}}
+}
 "#
-        ),
+        .to_string()),
         _ => anyhow::bail!("unsupported shell: {}. Use fish, bash, or zsh", shell),
     }
-    Ok(())
 }
 
-fn list_shades(config: &config::Config) -> Result<()> {
-    let environments = env::list_environments(&config.env_dir)?;
-    if environments.is_empty() {
-        eprintln!("No shade environments found in {}", config.env_dir);
-        return Ok(());
-    }
-    for environment in &environments {
-        println!("{}", environment.name);
-    }
-    Ok(())
-}
-
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init { ref shell } => return print_shell_init(shell),
-        Command::Config => return generate_config(),
+        Command::Init { ref shell } => {
+            let output = shell_init(shell)?;
+            print!("{output}");
+            return Ok(());
+        }
+        Command::Config => {
+            let path = generate_config()?;
+            eprintln!("Created config file: {}", path.display());
+            return Ok(());
+        }
         _ => {}
     }
 
     let config = config::Config::load()?;
 
     match cli.command {
-        Command::List => list_shades(&config),
-        Command::Docker => run_docker_for_current_shade(&config),
+        Command::List => {
+            let environments = env::list_environments(&config.env_dir)?;
+            if environments.is_empty() {
+                eprintln!("No shade environments found in {}", config.env_dir);
+            } else {
+                for environment in &environments {
+                    println!("{}", environment.name);
+                }
+            }
+            Ok(())
+        }
+        Command::Docker => {
+            let action = run_docker_for_current_shade(&config)?;
+            eprintln!("{}", action.message);
+            Ok(())
+        }
         Command::New {
             skip_repos,
             repos,
@@ -237,15 +254,27 @@ fn main() -> Result<()> {
                 delete_shade(environment, &vcs, &config)
             };
 
+            let print_workspace_results = |results: Vec<WorkspaceResult>| {
+                for result in &results {
+                    match &result.error {
+                        None => eprintln!("Created workspace for {}: done", result.name),
+                        Some(e) => {
+                            eprintln!("Created workspace for {}: failed: {}", result.name, e)
+                        }
+                    }
+                }
+            };
+
             match tui::run_tui(&config, delete_handler)? {
                 tui::TuiResult::Selected(environment) => {
                     if repos {
-                        select_and_create_workspaces(
+                        let results = select_and_create_workspaces(
                             &vcs,
                             &config,
                             &environment.path,
                             &environment.label,
                         )?;
+                        print_workspace_results(results);
                     }
                     println!("{}", environment.path.display());
                 }
@@ -254,7 +283,9 @@ fn main() -> Result<()> {
                     shade_config::ShadeConfig::default().save(&environment.path)?;
 
                     if !skip_repos {
-                        select_and_create_workspaces(&vcs, &config, &environment.path, &label)?;
+                        let results =
+                            select_and_create_workspaces(&vcs, &config, &environment.path, &label)?;
+                        print_workspace_results(results);
                     }
 
                     println!("{}", environment.path.display());
