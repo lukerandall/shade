@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+use crate::env_vars::{self, EnvValue};
 use crate::shade_config::ShadeConfig;
 
 /// Check whether a container with the given name exists and its state.
@@ -57,10 +60,16 @@ fn volume_args(shade_path: &Path, repo_names: &[String]) -> Vec<String> {
     args
 }
 
-pub fn run_docker(shade_name: &str, shade_path: &Path, default_image: &str) -> Result<()> {
+pub fn run_docker(
+    shade_name: &str,
+    shade_path: &Path,
+    default_image: &str,
+    root_env: &HashMap<String, EnvValue>,
+) -> Result<()> {
     let name = container_name(shade_name);
     let shade_config = ShadeConfig::load(shade_path)?;
     let image = shade_config.image_or(default_image);
+    let merged_env = env_vars::merge_env(root_env, &shade_config.env);
 
     match inspect_container(&name)? {
         ContainerState::Running => {
@@ -73,18 +82,28 @@ pub fn run_docker(shade_name: &str, shade_path: &Path, default_image: &str) -> R
         }
         ContainerState::NotFound => {
             let repos = find_repo_dirs(shade_path);
+            let resolved = env_vars::resolve_env(&merged_env)?;
             println!("Creating container {name} from {image}...");
-            create_and_run(&name, shade_path, &repos, &image)?;
+            create_and_run(&name, shade_path, &repos, &image, &resolved)?;
         }
     }
 
     Ok(())
 }
 
-fn create_and_run(name: &str, shade_path: &Path, repos: &[String], image: &str) -> Result<()> {
+fn create_and_run(
+    name: &str,
+    shade_path: &Path,
+    repos: &[String],
+    image: &str,
+    env: &[(String, String)],
+) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(["run", "-it", "--name", name, "-w", "/workspace"]);
     cmd.args(volume_args(shade_path, repos));
+    for (key, value) in env {
+        cmd.args(["-e", &format!("{key}={value}")]);
+    }
     cmd.args([image, "/bin/bash"]);
 
     let status = cmd.status().context("failed to run docker")?;

@@ -1,9 +1,7 @@
 mod config;
-#[allow(dead_code)]
 mod credentials;
 mod docker;
 mod env;
-#[allow(dead_code)]
 mod env_vars;
 mod repo_select;
 mod shade_config;
@@ -142,7 +140,7 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
         .context("invalid shade path")?
         .to_string_lossy();
 
-    docker::run_docker(&shade_name, &shade_path, &config.default_image)
+    docker::run_docker(&shade_name, &shade_path, &config.default_image, &config.env)
 }
 
 fn generate_config() -> Result<std::path::PathBuf> {

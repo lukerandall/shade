@@ -60,19 +60,15 @@ pub fn resolve_command(command: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Return the list of known provider names.
-pub fn known_providers() -> Vec<&'static str> {
-    PROVIDERS.iter().map(|(name, _)| *name).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_known_providers_includes_gh() {
-        let providers = known_providers();
-        assert!(providers.contains(&"gh"));
+    fn test_resolve_gh_provider_exists() {
+        // Just verify the provider is registered, not that gh is authed
+        let (_, provider) = PROVIDERS.iter().find(|(n, _)| *n == "gh").unwrap();
+        assert_eq!(provider.env_var, "GH_TOKEN");
     }
 
     #[test]
