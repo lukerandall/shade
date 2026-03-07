@@ -1,50 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
-struct Provider {
-    env_var: &'static str,
-    command: &'static [&'static str],
-}
-
-const PROVIDERS: &[(&str, Provider)] = &[(
-    "gh",
-    Provider {
-        env_var: "GH_TOKEN",
-        command: &["gh", "auth", "token"],
-    },
-)];
-
-#[derive(Debug)]
-pub struct ResolvedEnv {
-    pub name: String,
-    pub value: String,
-}
-
-/// Look up a known provider by name and resolve its value.
-pub fn resolve_provider(name: &str) -> Result<ResolvedEnv> {
-    let (_, provider) = PROVIDERS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .with_context(|| format!("unknown credential provider: {name}"))?;
-
-    let output = Command::new(provider.command[0])
-        .args(&provider.command[1..])
-        .output()
-        .with_context(|| format!("failed to run credential command for {name}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("credential command for {name} failed: {stderr}");
-    }
-
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    Ok(ResolvedEnv {
-        name: provider.env_var.to_string(),
-        value,
-    })
-}
-
 /// Resolve a `{ command = "..." }` style env var.
 pub fn resolve_command(command: &str) -> Result<String> {
     let output = Command::new("sh")
@@ -60,21 +16,40 @@ pub fn resolve_command(command: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Resolve a `{ keychain = "service-name" }` style env var via macOS Keychain.
+pub fn resolve_keychain(service: &str) -> Result<String> {
+    let output = Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .output()
+        .with_context(|| format!("failed to read keychain item: {service}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("keychain lookup failed for {service}: {stderr}");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_gh_provider_exists() {
-        // Just verify the provider is registered, not that gh is authed
-        let (_, provider) = PROVIDERS.iter().find(|(n, _)| *n == "gh").unwrap();
-        assert_eq!(provider.env_var, "GH_TOKEN");
+    fn test_resolve_command() {
+        let result = resolve_command("echo hello").unwrap();
+        assert_eq!(result, "hello");
     }
 
     #[test]
-    fn test_unknown_provider_returns_error() {
-        let result = resolve_provider("nonexistent");
+    fn test_resolve_command_failure() {
+        let result = resolve_command("false");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn test_resolve_keychain_missing_item() {
+        let result = resolve_keychain("shade-test-nonexistent-item-abc123");
+        assert!(result.is_err());
     }
 }

@@ -9,7 +9,7 @@ use crate::credentials;
 ///
 /// Supports three forms in TOML:
 /// - `MY_VAR = "static-value"`
-/// - `GH_TOKEN = { from = "gh" }`
+/// - `GH_TOKEN = { keychain = "shade-gh-token" }`
 /// - `SOME_TOKEN = { command = "cat ~/.secrets/token" }`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -21,14 +21,11 @@ pub enum EnvValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvSource {
-    From(String),
+    Keychain(String),
     Command(String),
 }
 
 /// Resolve a map of env var definitions into concrete name=value pairs.
-///
-/// For `{ from = "gh" }`, the env var name comes from the provider registry
-/// (not the TOML key), so the key in the map is ignored for providers.
 pub fn resolve_env(env: &HashMap<String, EnvValue>) -> Result<Vec<(String, String)>> {
     let mut resolved = Vec::new();
 
@@ -37,9 +34,9 @@ pub fn resolve_env(env: &HashMap<String, EnvValue>) -> Result<Vec<(String, Strin
             EnvValue::Static(val) => {
                 resolved.push((key.clone(), val.clone()));
             }
-            EnvValue::Dynamic(EnvSource::From(provider)) => {
-                let cred = credentials::resolve_provider(provider)?;
-                resolved.push((cred.name, cred.value));
+            EnvValue::Dynamic(EnvSource::Keychain(service)) => {
+                let val = credentials::resolve_keychain(service)?;
+                resolved.push((key.clone(), val));
             }
             EnvValue::Dynamic(EnvSource::Command(cmd)) => {
                 let val = credentials::resolve_command(cmd)?;
@@ -78,12 +75,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_from_provider() {
-        let toml_str = r#"GH_TOKEN = { from = "gh" }"#;
+    fn test_parse_keychain() {
+        let toml_str = r#"GH_TOKEN = { keychain = "shade-gh-token" }"#;
         let parsed: HashMap<String, EnvValue> = toml::from_str(toml_str).unwrap();
         assert_eq!(
             parsed.get("GH_TOKEN"),
-            Some(&EnvValue::Dynamic(EnvSource::From("gh".to_string())))
+            Some(&EnvValue::Dynamic(EnvSource::Keychain(
+                "shade-gh-token".to_string()
+            )))
         );
     }
 
