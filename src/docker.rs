@@ -217,10 +217,11 @@ pub fn build_image(
 
     let temp_name = format!("shade-build-{}", std::process::id());
 
-    // Run the setup in a temporary container
+    // Run the setup in a temporary container (no security limits — we need
+    // full capabilities for apt-get, etc. Hardening applies to runtime only.)
     let mut cmd = Command::new("docker");
     cmd.args(["run", "--name", &temp_name]);
-    cmd.args(limits.docker_args());
+    let _ = limits; // limits are for runtime containers, not build
     for (key, value) in env {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
