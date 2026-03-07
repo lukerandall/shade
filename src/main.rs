@@ -267,6 +267,7 @@ fn main() -> Result<()> {
                     let environment = env::create_environment(&config.env_dir, &label)?;
                     let shade_cfg = shade_config::ShadeConfig {
                         setup: config.setup.clone(),
+                        mounts: config.mounts.clone(),
                         env: config.env.clone(),
                         ..Default::default()
                     };

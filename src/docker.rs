@@ -90,6 +90,7 @@ pub fn run_docker(
                 &repos,
                 &image,
                 &resolved,
+                &shade_config.mounts,
                 shade_config.setup.as_deref(),
             )?;
         }
@@ -104,11 +105,15 @@ fn create_and_run(
     repos: &[String],
     image: &str,
     env: &[(String, String)],
+    mounts: &[String],
     setup: Option<&str>,
 ) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(["run", "-it", "--name", name, "-w", "/workspace"]);
     cmd.args(volume_args(shade_path, repos));
+    for mount in mounts {
+        cmd.args(["-v", &format!("{mount}:{mount}")]);
+    }
     for (key, value) in env {
         cmd.args(["-e", &format!("{key}={value}")]);
     }

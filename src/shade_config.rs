@@ -13,6 +13,8 @@ pub struct ShadeConfig {
     pub image: Option<String>,
     pub setup: Option<String>,
     #[serde(default)]
+    pub mounts: Vec<String>,
+    #[serde(default)]
     pub env: HashMap<String, EnvValue>,
 }
 

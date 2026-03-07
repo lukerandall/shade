@@ -23,6 +23,8 @@ struct RawConfig {
     default_image: Option<String>,
     setup: Option<String>,
     #[serde(default)]
+    mounts: Vec<String>,
+    #[serde(default)]
     env: HashMap<String, EnvValue>,
 }
 
@@ -32,6 +34,7 @@ pub struct Config {
     pub code_dirs: Vec<String>,
     pub default_image: String,
     pub setup: Option<String>,
+    pub mounts: Vec<String>,
     pub env: HashMap<String, EnvValue>,
 }
 
@@ -81,11 +84,14 @@ impl Config {
 
         let default_image = raw.default_image.unwrap_or_else(Self::default_image);
 
+        let mounts = raw.mounts.iter().map(|m| expand_tilde(m)).collect();
+
         Ok(Config {
             env_dir,
             code_dirs,
             default_image,
             setup: raw.setup,
+            mounts,
             env: raw.env,
         })
     }
@@ -96,6 +102,7 @@ impl Config {
             code_dirs: Self::default_code_dirs(),
             default_image: Self::default_image(),
             setup: None,
+            mounts: Vec::new(),
             env: HashMap::new(),
         }
     }
