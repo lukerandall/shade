@@ -87,15 +87,26 @@ pub fn run_docker(
         ContainerState::NotFound => {
             let repos = find_repo_dirs(shade_path);
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
-            println!("Creating container {name} from {image}...");
+
+            // Use prebuilt image if available, skipping setup
+            let (effective_image, effective_setup) =
+                if prebuilt_image_exists(&image, shade_config.setup.as_deref()) {
+                    let prebuilt = prebuilt_image_name(&image, shade_config.setup.as_deref());
+                    println!("Creating container {name} from prebuilt image...");
+                    (prebuilt, None)
+                } else {
+                    println!("Creating container {name} from {image}...");
+                    (image.clone(), shade_config.setup.as_deref())
+                };
+
             create_and_run(&CreateOptions {
                 name: &name,
                 shade_path,
                 repos: &repos,
-                image: &image,
+                image: &effective_image,
                 env: &resolved,
                 mounts: &shade_config.mounts,
-                setup: shade_config.setup.as_deref(),
+                setup: effective_setup,
                 limits: &limits,
             })?;
         }
@@ -182,6 +193,97 @@ fn exec_into(name: &str) -> Result<()> {
         bail!("docker exec exited with {status}");
     }
     Ok(())
+}
+
+/// Build a pre-configured image by running setup on the base image and committing.
+/// Returns the image name.
+pub fn build_image(
+    base_image: &str,
+    setup: Option<&str>,
+    env: &[(String, String)],
+    limits: &ContainerLimits,
+) -> Result<String> {
+    let image_tag = prebuilt_image_name(base_image, setup);
+
+    // Check if image already exists
+    let check = Command::new("docker")
+        .args(["image", "inspect", &image_tag])
+        .output()
+        .context("failed to run docker image inspect")?;
+    if check.status.success() {
+        println!("Image {image_tag} already exists. Rebuilding...");
+        let _ = Command::new("docker").args(["rmi", &image_tag]).output();
+    }
+
+    let temp_name = format!("shade-build-{}", std::process::id());
+
+    // Run the setup in a temporary container
+    let mut cmd = Command::new("docker");
+    cmd.args(["run", "--name", &temp_name]);
+    cmd.args(limits.docker_args());
+    for (key, value) in env {
+        cmd.args(["-e", &format!("{key}={value}")]);
+    }
+    cmd.arg(base_image);
+
+    match setup {
+        Some(setup_cmd) => {
+            cmd.args(["/bin/bash", "-c", setup_cmd]);
+        }
+        None => {
+            cmd.args(["/bin/bash", "-c", "echo 'No setup command'"]);
+        }
+    }
+
+    println!("Running setup in temporary container...");
+    let status = cmd.status().context("failed to run docker")?;
+    if !status.success() {
+        // Clean up the failed container
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &temp_name])
+            .output();
+        bail!("setup command failed with {status}");
+    }
+
+    // Commit the container as a new image
+    println!("Committing image as {image_tag}...");
+    let output = Command::new("docker")
+        .args(["commit", &temp_name, &image_tag])
+        .output()
+        .context("failed to commit container")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &temp_name])
+            .output();
+        bail!("failed to commit image: {stderr}");
+    }
+
+    // Remove the temporary container
+    let _ = Command::new("docker").args(["rm", &temp_name]).output();
+
+    println!("Built image {image_tag}");
+    Ok(image_tag)
+}
+
+/// Check if a prebuilt image exists for the given base image + setup combo.
+pub fn prebuilt_image_exists(base_image: &str, setup: Option<&str>) -> bool {
+    let tag = prebuilt_image_name(base_image, setup);
+    Command::new("docker")
+        .args(["image", "inspect", &tag])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn prebuilt_image_name(base_image: &str, setup: Option<&str>) -> String {
+    let hash = match setup {
+        Some(cmd) => {
+            let combined = format!("{base_image}:{cmd}");
+            hash_setup(&combined)
+        }
+        None => hash_setup(base_image),
+    };
+    format!("shade-prebuilt:{hash:x}")
 }
 
 /// Remove a container if it exists (stopped or running). Silently succeeds if not found.

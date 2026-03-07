@@ -59,6 +59,16 @@ enum KeychainCommand {
 }
 
 #[derive(clap::Subcommand)]
+enum DockerCommand {
+    /// Start or attach to a Docker container for the current shade
+    Run,
+    /// Pre-build a Docker image with setup already applied
+    Build,
+    /// Remove the Docker container for the current shade
+    Rm,
+}
+
+#[derive(clap::Subcommand)]
 enum Command {
     // -- Environment commands --
     /// Create or select a shade environment
@@ -84,8 +94,9 @@ enum Command {
         /// Name of the shade to delete (e.g. 2026-03-07-my-feature)
         name: String,
     },
-    /// Start or attach to a Docker container for the current shade
-    Docker,
+    /// Manage Docker containers for shade environments
+    #[command(subcommand)]
+    Docker(DockerCommand),
 
     // -- Setup commands --
     /// Output shell integration for your shell (fish, bash, zsh)
@@ -168,25 +179,28 @@ fn delete_shade(
     Ok(())
 }
 
-fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
+/// Find the shade root directory by walking up from cwd.
+fn current_shade_path(env_dir: &str) -> Result<std::path::PathBuf> {
     let cwd = std::env::current_dir().context("could not determine current directory")?;
-    let env_dir = std::path::Path::new(&config.env_dir)
+    let env_dir = std::path::Path::new(env_dir)
         .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(&config.env_dir));
+        .unwrap_or_else(|_| std::path::PathBuf::from(env_dir));
 
-    // Walk up from cwd to find a directory that's a direct child of env_dir
     let mut candidate = Some(cwd.as_path());
-    let shade_path = loop {
+    loop {
         match candidate {
-            Some(path) if path.parent() == Some(&env_dir) => break path.to_path_buf(),
+            Some(path) if path.parent() == Some(&env_dir) => return Ok(path.to_path_buf()),
             Some(path) => candidate = path.parent(),
             None => anyhow::bail!(
                 "not inside a shade environment (expected to be under {})",
-                config.env_dir
+                env_dir.display()
             ),
         }
-    };
+    }
+}
 
+fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
+    let shade_path = current_shade_path(&config.env_dir)?;
     let shade_name = shade_path
         .file_name()
         .context("invalid shade path")?
@@ -331,7 +345,28 @@ fn main() -> Result<()> {
             println!("Deleted {name}");
             Ok(())
         }
-        Command::Docker => run_docker_for_current_shade(&config),
+        Command::Docker(DockerCommand::Run) => run_docker_for_current_shade(&config),
+        Command::Docker(DockerCommand::Build) => {
+            let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
+            docker::build_image(
+                &config.default_image,
+                config.setup.as_deref(),
+                &resolved,
+                &config.container,
+            )?;
+            Ok(())
+        }
+        Command::Docker(DockerCommand::Rm) => {
+            let shade_path = current_shade_path(&config.env_dir)?;
+            let shade_name = shade_path
+                .file_name()
+                .context("invalid shade path")?
+                .to_string_lossy();
+
+            docker::remove_container(&shade_name)?;
+            println!("Removed container for {shade_name}");
+            Ok(())
+        }
         Command::New { skip_repos, repos } => {
             let vcs = JjVcs;
             let delete_handler = |environment: &env::Environment| -> Result<()> {
