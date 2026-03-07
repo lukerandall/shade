@@ -15,32 +15,41 @@ use vcs::jj::JjVcs;
 
 #[derive(Parser)]
 #[command(name = "shade", about = "Ephemeral development environments", version)]
+#[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Command>,
-
-    /// Skip the repo selection step when creating a new shade
-    #[arg(short = 'R', long = "skip-repos")]
-    skip_repos: bool,
-
-    /// Prompt for repo selection even when selecting an existing shade
-    #[arg(short = 'r', long = "repos")]
-    repos: bool,
-
-    /// Print the selected path instead of cd'ing (for shell integration)
-    #[arg(long = "print-path")]
-    print_path: bool,
+    command: Command,
 }
 
 #[derive(clap::Subcommand)]
 enum Command {
+    // -- Environment commands --
+    /// Create or select a shade environment
+    #[command(next_help_heading = "Environment Commands")]
+    New {
+        /// Skip the repo selection step when creating a new shade
+        #[arg(short = 'R', long = "skip-repos")]
+        skip_repos: bool,
+
+        /// Prompt for repo selection even when selecting an existing shade
+        #[arg(short = 'r', long = "repos")]
+        repos: bool,
+
+        /// Print the selected path instead of cd'ing (for shell integration)
+        #[arg(long = "print-path")]
+        print_path: bool,
+    },
+    /// List existing shade environments
+    List,
+    /// Start or attach to a Docker container for the current shade
+    Docker,
+
+    // -- Setup commands --
     /// Output shell integration for your shell (fish, bash, zsh)
     Init {
         /// Shell to generate integration for
         shell: String,
     },
-    /// Start or attach to a Docker container for the current shade
-    Docker,
     /// Generate a default configuration file
     Config,
 }
@@ -160,7 +169,7 @@ fn print_shell_init(shell: &str) -> Result<()> {
     match shell {
         "fish" => print!(
             r#"function s --description "Open a shade environment"
-    set -l path (command shade --print-path $argv)
+    set -l path (command shade new --print-path $argv)
     if test -n "$path"
         cd "$path"
     end
@@ -170,7 +179,7 @@ end
         "bash" => print!(
             r#"s() {{
     local path
-    path="$(command shade --print-path "$@")"
+    path="$(command shade new --print-path "$@")"
     if [ -n "$path" ]; then
         cd "$path" || return
     fi
@@ -180,7 +189,7 @@ end
         "zsh" => print!(
             r#"s() {{
     local path
-    path="$(command shade --print-path "$@")"
+    path="$(command shade new --print-path "$@")"
     if [[ -n "$path" ]]; then
         cd "$path" || return
     fi
@@ -192,44 +201,68 @@ end
     Ok(())
 }
 
+fn list_shades(config: &config::Config) -> Result<()> {
+    let environments = env::list_environments(&config.env_dir)?;
+    if environments.is_empty() {
+        eprintln!("No shade environments found in {}", config.env_dir);
+        return Ok(());
+    }
+    for environment in &environments {
+        println!("{}", environment.name);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match &cli.command {
-        Some(Command::Init { shell }) => return print_shell_init(shell),
-        Some(Command::Config) => return generate_config(),
+    match cli.command {
+        Command::Init { ref shell } => return print_shell_init(shell),
+        Command::Config => return generate_config(),
         _ => {}
     }
 
     let config = config::Config::load()?;
 
-    if let Some(Command::Docker) = &cli.command {
-        return run_docker_for_current_shade(&config);
-    }
-    let vcs = JjVcs;
+    match cli.command {
+        Command::List => list_shades(&config),
+        Command::Docker => run_docker_for_current_shade(&config),
+        Command::New {
+            skip_repos,
+            repos,
+            print_path: _,
+        } => {
+            let vcs = JjVcs;
+            let delete_handler = |environment: &env::Environment| -> Result<()> {
+                delete_shade(environment, &vcs, &config)
+            };
 
-    let delete_handler =
-        |environment: &env::Environment| -> Result<()> { delete_shade(environment, &vcs, &config) };
+            match tui::run_tui(&config, delete_handler)? {
+                tui::TuiResult::Selected(environment) => {
+                    if repos {
+                        select_and_create_workspaces(
+                            &vcs,
+                            &config,
+                            &environment.path,
+                            &environment.label,
+                        )?;
+                    }
+                    println!("{}", environment.path.display());
+                }
+                tui::TuiResult::Create(label) => {
+                    let environment = env::create_environment(&config.env_dir, &label)?;
+                    shade_config::ShadeConfig::default().save(&environment.path)?;
 
-    match tui::run_tui(&config, delete_handler)? {
-        tui::TuiResult::Selected(environment) => {
-            if cli.repos {
-                select_and_create_workspaces(&vcs, &config, &environment.path, &environment.label)?;
+                    if !skip_repos {
+                        select_and_create_workspaces(&vcs, &config, &environment.path, &label)?;
+                    }
+
+                    println!("{}", environment.path.display());
+                }
+                tui::TuiResult::Cancelled => {}
             }
-            println!("{}", environment.path.display());
+            Ok(())
         }
-        tui::TuiResult::Create(label) => {
-            let environment = env::create_environment(&config.env_dir, &label)?;
-            shade_config::ShadeConfig::default().save(&environment.path)?;
-
-            if !cli.skip_repos {
-                select_and_create_workspaces(&vcs, &config, &environment.path, &label)?;
-            }
-
-            println!("{}", environment.path.display());
-        }
-        tui::TuiResult::Cancelled => {}
+        Command::Init { .. } | Command::Config => unreachable!(),
     }
-
-    Ok(())
 }
