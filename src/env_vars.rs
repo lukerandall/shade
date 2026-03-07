@@ -9,7 +9,7 @@ use crate::credentials;
 ///
 /// Supports three forms in TOML:
 /// - `MY_VAR = "static-value"`
-/// - `GH_TOKEN = { keychain = "shade-gh-token" }`
+/// - `GH_TOKEN = { keychain = "gh-token" }`
 /// - `SOME_TOKEN = { command = "cat ~/.secrets/token" }`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -26,7 +26,14 @@ pub enum EnvSource {
 }
 
 /// Resolve a map of env var definitions into concrete name=value pairs.
-pub fn resolve_env(env: &HashMap<String, EnvValue>) -> Result<Vec<(String, String)>> {
+///
+/// The `keychain_prefix` is prepended to keychain service names, so config
+/// can use short names like `{ keychain = "gh-token" }` while the actual
+/// keychain entry is stored as e.g. `shade.gh-token`.
+pub fn resolve_env(
+    env: &HashMap<String, EnvValue>,
+    keychain_prefix: &str,
+) -> Result<Vec<(String, String)>> {
     let mut resolved = Vec::new();
 
     for (key, value) in env {
@@ -35,7 +42,8 @@ pub fn resolve_env(env: &HashMap<String, EnvValue>) -> Result<Vec<(String, Strin
                 resolved.push((key.clone(), val.clone()));
             }
             EnvValue::Dynamic(EnvSource::Keychain(service)) => {
-                let val = credentials::resolve_keychain(service)?;
+                let prefixed = format!("{keychain_prefix}{service}");
+                let val = credentials::resolve_keychain(&prefixed)?;
                 resolved.push((key.clone(), val));
             }
             EnvValue::Dynamic(EnvSource::Command(cmd)) => {
@@ -102,7 +110,7 @@ mod tests {
     fn test_resolve_static() {
         let mut env = HashMap::new();
         env.insert("FOO".to_string(), EnvValue::Static("bar".to_string()));
-        let resolved = resolve_env(&env).unwrap();
+        let resolved = resolve_env(&env, "").unwrap();
         assert_eq!(resolved, vec![("FOO".to_string(), "bar".to_string())]);
     }
 
@@ -113,7 +121,7 @@ mod tests {
             "VAL".to_string(),
             EnvValue::Dynamic(EnvSource::Command("echo hello".to_string())),
         );
-        let resolved = resolve_env(&env).unwrap();
+        let resolved = resolve_env(&env, "").unwrap();
         assert_eq!(resolved, vec![("VAL".to_string(), "hello".to_string())]);
     }
 

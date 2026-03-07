@@ -22,6 +22,7 @@ struct RawConfig {
     code_dirs: Option<Vec<String>>,
     default_image: Option<String>,
     setup: Option<String>,
+    keychain_prefix: Option<String>,
     #[serde(default)]
     mounts: Vec<String>,
     #[serde(default)]
@@ -34,6 +35,7 @@ pub struct Config {
     pub code_dirs: Vec<String>,
     pub default_image: String,
     pub setup: Option<String>,
+    pub keychain_prefix: String,
     pub mounts: Vec<String>,
     pub env: HashMap<String, EnvValue>,
 }
@@ -83,6 +85,9 @@ impl Config {
         };
 
         let default_image = raw.default_image.unwrap_or_else(Self::default_image);
+        let keychain_prefix = raw
+            .keychain_prefix
+            .unwrap_or_else(Self::default_keychain_prefix);
 
         let mounts = raw.mounts.iter().map(|m| expand_tilde(m)).collect();
 
@@ -91,6 +96,7 @@ impl Config {
             code_dirs,
             default_image,
             setup: raw.setup,
+            keychain_prefix,
             mounts,
             env: raw.env,
         })
@@ -102,6 +108,7 @@ impl Config {
             code_dirs: Self::default_code_dirs(),
             default_image: Self::default_image(),
             setup: None,
+            keychain_prefix: Self::default_keychain_prefix(),
             mounts: Vec::new(),
             env: HashMap::new(),
         }
@@ -111,6 +118,13 @@ impl Config {
         "ubuntu:latest".to_string()
     }
 
+    fn default_keychain_prefix() -> String {
+        "shade.".to_string()
+    }
+
+    const DEFAULT_ENV_DIR: &str = "~/Shades";
+    const DEFAULT_CODE_DIRS: &[&str] = &["~/Code"];
+
     /// Generate a default config file as a TOML string with human-friendly paths.
     pub fn generate_default() -> String {
         #[derive(Serialize)]
@@ -118,12 +132,17 @@ impl Config {
             env_dir: String,
             code_dirs: Vec<String>,
             default_image: String,
+            keychain_prefix: String,
         }
 
         let config = FileConfig {
-            env_dir: "~/Shades".to_string(),
-            code_dirs: vec!["~/Code".to_string()],
+            env_dir: Self::DEFAULT_ENV_DIR.to_string(),
+            code_dirs: Self::DEFAULT_CODE_DIRS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             default_image: Self::default_image(),
+            keychain_prefix: Self::default_keychain_prefix(),
         };
 
         toml::to_string_pretty(&config).expect("failed to serialize default config")
@@ -137,17 +156,14 @@ impl Config {
     }
 
     fn default_code_dirs() -> Vec<String> {
-        let home = dirs::home_dir()
-            .map(|h| h.join("Code"))
-            .unwrap_or_else(|| PathBuf::from("Code"));
-        vec![home.to_string_lossy().to_string()]
+        Self::DEFAULT_CODE_DIRS
+            .iter()
+            .map(|d| expand_tilde(d))
+            .collect()
     }
 
     fn default_env_dir() -> String {
-        let home = dirs::home_dir()
-            .map(|h| h.join("Shades"))
-            .unwrap_or_else(|| PathBuf::from("Shades"));
-        home.to_string_lossy().to_string()
+        expand_tilde(Self::DEFAULT_ENV_DIR)
     }
 }
 

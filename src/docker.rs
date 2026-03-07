@@ -65,6 +65,7 @@ pub fn run_docker(
     shade_path: &Path,
     default_image: &str,
     root_env: &HashMap<String, EnvValue>,
+    keychain_prefix: &str,
 ) -> Result<()> {
     let name = container_name(shade_name);
     let shade_config = ShadeConfig::load(shade_path)?;
@@ -82,7 +83,7 @@ pub fn run_docker(
         }
         ContainerState::NotFound => {
             let repos = find_repo_dirs(shade_path);
-            let resolved = env_vars::resolve_env(&merged_env)?;
+            let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
             println!("Creating container {name} from {image}...");
             create_and_run(
                 &name,

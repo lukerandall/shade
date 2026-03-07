@@ -3,6 +3,7 @@ mod credentials;
 mod docker;
 mod env;
 mod env_vars;
+mod keychain;
 mod repo_select;
 mod shade_config;
 mod shell_init;
@@ -13,6 +14,7 @@ mod vcs;
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use keychain::SecretStore;
 use vcs::Vcs;
 use vcs::jj::JjVcs;
 
@@ -30,6 +32,29 @@ enum ConfigCommand {
     New,
     /// Open the configuration file in $EDITOR
     Edit,
+}
+
+#[derive(clap::Subcommand)]
+enum KeychainCommand {
+    /// Store a secret in the keychain
+    Set {
+        /// Service name (prefix from config is applied automatically)
+        name: String,
+        /// Secret value (omit to read from stdin)
+        value: Option<String>,
+    },
+    /// Fetch a secret from the keychain
+    Get {
+        /// Service name (prefix from config is applied automatically)
+        name: String,
+    },
+    /// List shade-managed keychain entries
+    List,
+    /// Delete a secret from the keychain
+    Delete {
+        /// Service name (prefix from config is applied automatically)
+        name: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -70,6 +95,9 @@ enum Command {
     /// Manage the shade configuration file
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Manage secrets in the system keychain
+    #[command(subcommand)]
+    Keychain(KeychainCommand),
 }
 
 fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
@@ -163,7 +191,13 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
         .context("invalid shade path")?
         .to_string_lossy();
 
-    docker::run_docker(&shade_name, &shade_path, &config.default_image, &config.env)
+    docker::run_docker(
+        &shade_name,
+        &shade_path,
+        &config.default_image,
+        &config.env,
+        &config.keychain_prefix,
+    )
 }
 
 fn generate_config() -> Result<std::path::PathBuf> {
@@ -216,6 +250,53 @@ fn main() -> Result<()> {
     let config = config::Config::load()?;
 
     match cli.command {
+        Command::Keychain(ref cmd) => {
+            let store = keychain::default_store();
+            let prefix = &config.keychain_prefix;
+            match cmd {
+                KeychainCommand::Set { name, value } => {
+                    let service = format!("{prefix}{name}");
+                    let secret = match value {
+                        Some(v) => v.clone(),
+                        None => {
+                            eprint!("Enter value for {name}: ");
+                            let mut buf = String::new();
+                            std::io::stdin()
+                                .read_line(&mut buf)
+                                .context("failed to read from stdin")?;
+                            buf.trim().to_string()
+                        }
+                    };
+                    store.set(&service, &secret)?;
+                    println!("Stored {service}");
+                }
+                KeychainCommand::Get { name } => {
+                    let service = format!("{prefix}{name}");
+                    let value = store.get(&service)?;
+                    println!("{value}");
+                }
+                KeychainCommand::List => {
+                    let entries = store.list(prefix)?;
+                    if entries.is_empty() {
+                        println!("No keychain entries with prefix \"{prefix}\"");
+                    } else {
+                        for entry in &entries {
+                            if let Some(short) = entry.strip_prefix(prefix) {
+                                println!("{short}");
+                            } else {
+                                println!("{entry}");
+                            }
+                        }
+                    }
+                }
+                KeychainCommand::Delete { name } => {
+                    let service = format!("{prefix}{name}");
+                    store.delete(&service)?;
+                    println!("Deleted {service}");
+                }
+            }
+            Ok(())
+        }
         Command::List => {
             let environments = env::list_environments(&config.env_dir)?;
             if environments.is_empty() {
