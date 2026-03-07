@@ -1,6 +1,7 @@
 mod config;
 mod env;
 mod repo_select;
+mod shade_config;
 mod slug;
 mod tui;
 mod vcs;
