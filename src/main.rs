@@ -5,6 +5,7 @@ mod docker;
 mod env;
 mod env_vars;
 mod keychain;
+mod multiplexer;
 mod repo_select;
 mod shade_config;
 mod shell_init;
@@ -350,6 +351,7 @@ fn main() -> Result<()> {
             docker::build_image(
                 &config.docker.image,
                 config.docker.setup.as_deref(),
+                config.docker.multiplexer.as_ref(),
                 &resolved,
                 &config.docker.limits,
             )?;

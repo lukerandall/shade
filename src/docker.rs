@@ -6,6 +6,7 @@ use std::process::Command;
 
 use crate::container::{ContainerLimits, DockerConfig};
 use crate::env_vars::{self, EnvValue};
+use crate::multiplexer::MultiplexerKind;
 use crate::shade_config::ShadeConfig;
 
 /// Check whether a container with the given name exists and its state.
@@ -73,14 +74,19 @@ pub fn run_docker(
     let docker = root_docker.merge(&shade_config.docker);
     let merged_env = env_vars::merge_env(root_env, &shade_config.env);
 
+    let mux = docker.multiplexer.as_ref();
+
     match inspect_container(&name)? {
         ContainerState::Running => {
             println!("Attaching to running container {name}...");
-            exec_into(&name)?;
+            exec_into(&name, shade_name, mux)?;
         }
         ContainerState::Stopped => {
             println!("Starting stopped container {name}...");
-            start_container(&name)?;
+            start_container(&name, mux)?;
+            if mux.is_some() {
+                exec_into(&name, shade_name, mux)?;
+            }
         }
         ContainerState::NotFound => {
             let repos = find_repo_dirs(shade_path);
@@ -108,7 +114,12 @@ pub fn run_docker(
                 setup: docker.setup.as_deref(),
                 user: docker.user.as_deref(),
                 limits: &docker.limits,
+                detach: mux.is_some(),
             })?;
+
+            if mux.is_some() {
+                exec_into(&name, shade_name, mux)?;
+            }
         }
     }
 
@@ -124,16 +135,21 @@ fn hash_setup(cmd: &str) -> u64 {
     hasher.finish()
 }
 
-fn setup_script(setup: Option<&str>) -> String {
+fn setup_script(setup: Option<&str>, detach: bool) -> String {
+    let tail = if detach {
+        "exec sleep infinity"
+    } else {
+        "exec /bin/bash"
+    };
     match setup {
         Some(cmd) => {
             let cmd = cmd.trim();
             let hash = hash_setup(cmd);
             format!(
-                "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi && exec /bin/bash"
+                "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi && {tail}"
             )
         }
-        None => "exec /bin/bash".to_string(),
+        None => tail.to_string(),
     }
 }
 
@@ -147,11 +163,16 @@ struct CreateOptions<'a> {
     setup: Option<&'a str>,
     user: Option<&'a str>,
     limits: &'a ContainerLimits,
+    detach: bool,
 }
 
 fn create_and_run(opts: &CreateOptions) -> Result<()> {
     let mut cmd = Command::new("docker");
-    cmd.args(["run", "-it", "--name", opts.name, "-w", "/workspace"]);
+    if opts.detach {
+        cmd.args(["run", "-d", "--name", opts.name, "-w", "/workspace"]);
+    } else {
+        cmd.args(["run", "-it", "--name", opts.name, "-w", "/workspace"]);
+    }
     if let Some(user) = opts.user {
         cmd.args(["-u", user]);
     }
@@ -169,7 +190,7 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
     cmd.arg(opts.image);
-    cmd.args(["/bin/bash", "-c", &setup_script(opts.setup)]);
+    cmd.args(["/bin/bash", "-c", &setup_script(opts.setup, opts.detach)]);
 
     let status = cmd.status().context("failed to run docker")?;
     if !status.success() {
@@ -178,22 +199,35 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     Ok(())
 }
 
-fn start_container(name: &str) -> Result<()> {
-    let status = Command::new("docker")
-        .args(["start", "-ai", name])
-        .status()
-        .context("failed to start container")?;
+fn start_container(name: &str, mux: Option<&MultiplexerKind>) -> Result<()> {
+    let mut cmd = Command::new("docker");
+    if mux.is_some() {
+        // Detached container — just start it in background
+        cmd.args(["start", name]);
+    } else {
+        cmd.args(["start", "-ai", name]);
+    }
+    let status = cmd.status().context("failed to start container")?;
     if !status.success() {
         bail!("docker start exited with {status}");
     }
     Ok(())
 }
 
-fn exec_into(name: &str) -> Result<()> {
-    let status = Command::new("docker")
-        .args(["exec", "-it", name, "/bin/bash"])
-        .status()
-        .context("failed to exec into container")?;
+fn exec_into(name: &str, session: &str, mux: Option<&MultiplexerKind>) -> Result<()> {
+    let mut cmd = Command::new("docker");
+    cmd.args(["exec", "-it", name]);
+    match mux {
+        Some(kind) => {
+            let m = kind.get();
+            let attach = m.attach_cmd(session);
+            cmd.args(["/bin/bash", "-c", &attach]);
+        }
+        None => {
+            cmd.arg("/bin/bash");
+        }
+    }
+    let status = cmd.status().context("failed to exec into container")?;
     if !status.success() {
         bail!("docker exec exited with {status}");
     }
@@ -205,6 +239,7 @@ fn exec_into(name: &str) -> Result<()> {
 pub fn build_image(
     base_image: &str,
     setup: Option<&str>,
+    multiplexer: Option<&MultiplexerKind>,
     env: &[(String, String)],
     limits: &ContainerLimits,
 ) -> Result<String> {
@@ -232,17 +267,23 @@ pub fn build_image(
     }
     cmd.arg(base_image);
 
-    match setup {
-        Some(setup_cmd) => {
-            let setup_cmd = setup_cmd.trim();
-            let hash = hash_setup(setup_cmd);
-            let build_script = format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}");
-            cmd.args(["/bin/bash", "-c", &build_script]);
-        }
-        None => {
-            cmd.args(["/bin/bash", "-c", "echo 'No setup command'"]);
-        }
+    // Build a script that runs setup + installs the multiplexer
+    let mut steps = Vec::new();
+    if let Some(setup_cmd) = setup {
+        let setup_cmd = setup_cmd.trim();
+        let hash = hash_setup(setup_cmd);
+        steps.push(format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}"));
     }
+    if let Some(mux_kind) = multiplexer {
+        let mux = mux_kind.get();
+        println!("Including {} in image...", mux.name());
+        steps.push(mux.install_cmd().to_string());
+    }
+    if steps.is_empty() {
+        steps.push("echo 'No setup command'".to_string());
+    }
+    let build_script = steps.join(" && ");
+    cmd.args(["/bin/bash", "-c", &build_script]);
 
     println!("Running setup in temporary container...");
     let status = cmd.status().context("failed to run docker")?;

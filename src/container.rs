@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::multiplexer::MultiplexerKind;
+
 fn default_image() -> String {
     "ubuntu:latest".to_string()
 }
@@ -35,6 +37,7 @@ pub struct DockerConfig {
     pub image: String,
     pub setup: Option<String>,
     pub user: Option<String>,
+    pub multiplexer: Option<MultiplexerKind>,
     #[serde(default)]
     pub mounts: Vec<String>,
     #[serde(default)]
@@ -47,6 +50,7 @@ impl Default for DockerConfig {
             image: default_image(),
             setup: None,
             user: None,
+            multiplexer: None,
             mounts: Vec::new(),
             limits: ContainerLimits::default(),
         }
@@ -59,6 +63,7 @@ pub struct DockerConfigOverride {
     pub image: Option<String>,
     pub setup: Option<String>,
     pub user: Option<String>,
+    pub multiplexer: Option<MultiplexerKind>,
     pub mounts: Option<Vec<String>>,
     #[serde(default)]
     pub limits: ContainerLimitsOverride,
@@ -73,6 +78,10 @@ impl DockerConfig {
                 .unwrap_or_else(|| self.image.clone()),
             setup: overrides.setup.clone().or_else(|| self.setup.clone()),
             user: overrides.user.clone().or_else(|| self.user.clone()),
+            multiplexer: overrides
+                .multiplexer
+                .clone()
+                .or_else(|| self.multiplexer.clone()),
             mounts: overrides
                 .mounts
                 .clone()
