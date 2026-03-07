@@ -119,6 +119,32 @@ STATIC_VAR = "some-value"
 DYNAMIC_VAR = { command = "cat ~/.secrets/token" }
 ```
 
+### Common tokens
+
+**Claude Code** — generate an OAuth token with `claude setup-token` and store it
+in the keychain:
+
+```bash
+shade keychain set claude sk-ant-o...
+```
+
+```toml
+[env]
+CLAUDE_CODE_OAUTH_TOKEN = { keychain = "claude" }
+```
+
+**GitHub** — create a [personal access token](https://github.com/settings/tokens)
+and store it for use with `gh` and other GitHub tooling:
+
+```bash
+shade keychain set github ghp_your_token_here
+```
+
+```toml
+[env]
+GH_TOKEN = { keychain = "github" }
+```
+
 ## Other tools
 
 - [Scry](https://github.com/stephendolan/scry) — the inspiration for this project. Scry provides ephemeral workspaces for safe AI-assisted development, built around Git worktrees.
