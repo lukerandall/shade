@@ -88,16 +88,17 @@ pub fn run_docker(
             let repos = find_repo_dirs(shade_path);
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
-            // Use prebuilt image if available, skipping setup
-            let (effective_image, effective_setup) =
-                if prebuilt_image_exists(&image, shade_config.setup.as_deref()) {
-                    let prebuilt = prebuilt_image_name(&image, shade_config.setup.as_deref());
-                    println!("Creating container {name} from prebuilt image...");
-                    (prebuilt, None)
-                } else {
-                    println!("Creating container {name} from {image}...");
-                    (image.clone(), shade_config.setup.as_deref())
-                };
+            // Use prebuilt image if available (setup already baked in).
+            // Always pass the setup script — it checks a hash marker and
+            // only re-runs if the setup command has changed.
+            let effective_image = if prebuilt_image_exists(&image, shade_config.setup.as_deref()) {
+                let prebuilt = prebuilt_image_name(&image, shade_config.setup.as_deref());
+                println!("Creating container {name} from prebuilt image...");
+                prebuilt
+            } else {
+                println!("Creating container {name} from {image}...");
+                image.clone()
+            };
 
             create_and_run(&CreateOptions {
                 name: &name,
@@ -106,7 +107,7 @@ pub fn run_docker(
                 image: &effective_image,
                 env: &resolved,
                 mounts: &shade_config.mounts,
-                setup: effective_setup,
+                setup: shade_config.setup.as_deref(),
                 limits: &limits,
             })?;
         }
@@ -229,7 +230,9 @@ pub fn build_image(
 
     match setup {
         Some(setup_cmd) => {
-            cmd.args(["/bin/bash", "-c", setup_cmd]);
+            let hash = hash_setup(setup_cmd);
+            let build_script = format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}");
+            cmd.args(["/bin/bash", "-c", &build_script]);
         }
         None => {
             cmd.args(["/bin/bash", "-c", "echo 'No setup command'"]);
