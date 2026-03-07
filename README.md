@@ -5,6 +5,67 @@ workspaces. Quickly create isolated, labelled sandboxes
 with linked repos and optional Docker containers for
 safe agent-driven development.
 
+## How it works
+
+Each shade is a dated, named directory (e.g. `2026-03-07-my-feature`) under a
+configurable root. When you create a shade, you pick which of your repos to link
+into it — Shade creates Jujutsu workspaces so each shade gets its own working
+copy without cloning. Optionally, you can spin up a Docker container scoped to
+the shade with your tools, secrets, and repos mounted in.
+
+## Quick start
+
+Add shell integration to your shell config (fish shown here):
+
+```fish
+shade init fish | source
+```
+
+This gives you a wrapper function `s` that handles directory switching
+automatically.
+
+### Primary commands
+
+```bash
+s                     # Create or select a shade (interactive TUI)
+s new                 # Same as above
+s cd <name>           # Switch to an existing shade
+s delete <name>       # Delete a shade and clean up its workspaces
+s list                # List all shades
+
+s docker run          # Start or attach to the shade's Docker container
+s docker build        # Pre-build a Docker image with setup baked in
+s docker rm           # Remove the shade's Docker container
+
+s config new          # Generate a default config file
+s config edit         # Open the config in $EDITOR
+
+s keychain set <name> # Store a secret
+s keychain get <name> # Retrieve a secret
+s keychain list       # List secrets
+```
+
+## Configuration
+
+Shade is configured via `~/.config/shade/config.toml`:
+
+```toml
+env_dir = "~/Shades"
+code_dirs = ["~/Code"]
+keychain_prefix = "shade."
+
+[env]
+GH_TOKEN = { keychain = "gh-token" }
+
+[docker]
+image = "ubuntu:latest"
+mounts = ["~/.config:/root/.config"]
+setup = "apt-get update && apt-get install -y ripgrep curl"
+```
+
+Per-shade overrides can be placed in `shade.toml` inside the shade directory to
+customize the Docker image, mounts, or environment for a specific shade.
+
 ## Secrets / Keychain
 
 Shade can inject secrets into Docker containers via environment variables. Secrets
@@ -57,3 +118,7 @@ You can also use shell commands or static values:
 STATIC_VAR = "some-value"
 DYNAMIC_VAR = { command = "cat ~/.secrets/token" }
 ```
+
+## Other tools
+
+- [Scry](https://github.com/stephendolan/scry) — the inspiration for this project. Scry provides ephemeral workspaces for safe AI-assisted development, built around Git worktrees.
