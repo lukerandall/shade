@@ -10,7 +10,7 @@ mod tui;
 mod vcs;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use vcs::Vcs;
 use vcs::jj::JjVcs;
@@ -179,9 +179,20 @@ fn generate_config() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
+fn generate_completions(shell: clap_complete::Shell) -> String {
+    let mut cmd = Cli::command();
+    let mut buf = Vec::new();
+    clap_complete::generate(shell, &mut cmd, "shade", &mut buf);
+    String::from_utf8(buf).expect("completions should be valid utf-8")
+}
+
 fn shell_init(shell: &str) -> Result<String> {
-    match shell {
-        "fish" => Ok(r#"function s --description "Open a shade environment"
+    let mut output = String::new();
+
+    let completions_shell = match shell {
+        "fish" => {
+            output.push_str(
+                r#"function s --description "Open a shade environment"
     switch "$argv[1]"
         case docker list delete config init help
             command shade $argv
@@ -192,9 +203,13 @@ fn shell_init(shell: &str) -> Result<String> {
             end
     end
 end
-"#
-        .to_string()),
-        "bash" => Ok(r#"s() {
+"#,
+            );
+            clap_complete::Shell::Fish
+        }
+        "bash" => {
+            output.push_str(
+                r#"s() {
     case "$1" in
         docker|list|delete|config|init|help)
             command shade "$@"
@@ -208,9 +223,13 @@ end
             ;;
     esac
 }
-"#
-        .to_string()),
-        "zsh" => Ok(r#"s() {
+"#,
+            );
+            clap_complete::Shell::Bash
+        }
+        "zsh" => {
+            output.push_str(
+                r#"s() {
     case "$1" in
         docker|list|delete|config|init|help)
             command shade "$@"
@@ -224,10 +243,17 @@ end
             ;;
     esac
 }
-"#
-        .to_string()),
+"#,
+            );
+            clap_complete::Shell::Zsh
+        }
         _ => anyhow::bail!("unsupported shell: {}. Use fish, bash, or zsh", shell),
-    }
+    };
+
+    output.push('\n');
+    output.push_str(&generate_completions(completions_shell));
+
+    Ok(output)
 }
 
 fn main() -> Result<()> {
