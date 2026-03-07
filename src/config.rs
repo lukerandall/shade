@@ -100,8 +100,8 @@ impl Config {
 
     fn default_env_dir() -> String {
         let home = dirs::home_dir()
-            .map(|h| h.join("Shade"))
-            .unwrap_or_else(|| PathBuf::from("Shade"));
+            .map(|h| h.join("Shades"))
+            .unwrap_or_else(|| PathBuf::from("Shades"));
         home.to_string_lossy().to_string()
     }
 }
@@ -138,7 +138,7 @@ mod tests {
         let config = Config::load_from(&config_path).unwrap();
 
         let home = dirs::home_dir().unwrap();
-        assert_eq!(config.env_dir, home.join("Shade").to_string_lossy());
+        assert_eq!(config.env_dir, home.join("Shades").to_string_lossy());
         assert_eq!(
             config.code_dirs,
             vec![home.join("Code").to_string_lossy().to_string()]
@@ -192,7 +192,7 @@ mod tests {
         let config = Config::load_from(&config_path).unwrap();
 
         let home = dirs::home_dir().unwrap();
-        assert_eq!(config.env_dir, home.join("Shade").to_string_lossy());
+        assert_eq!(config.env_dir, home.join("Shades").to_string_lossy());
         assert_eq!(
             config.code_dirs,
             vec![home.join("Code").to_string_lossy().to_string()]
