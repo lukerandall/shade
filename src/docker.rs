@@ -84,7 +84,14 @@ pub fn run_docker(
             let repos = find_repo_dirs(shade_path);
             let resolved = env_vars::resolve_env(&merged_env)?;
             println!("Creating container {name} from {image}...");
-            create_and_run(&name, shade_path, &repos, &image, &resolved)?;
+            create_and_run(
+                &name,
+                shade_path,
+                &repos,
+                &image,
+                &resolved,
+                shade_config.setup.as_deref(),
+            )?;
         }
     }
 
@@ -97,6 +104,7 @@ fn create_and_run(
     repos: &[String],
     image: &str,
     env: &[(String, String)],
+    setup: Option<&str>,
 ) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(["run", "-it", "--name", name, "-w", "/workspace"]);
@@ -104,7 +112,15 @@ fn create_and_run(
     for (key, value) in env {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
-    cmd.args([image, "/bin/bash"]);
+    cmd.arg(image);
+    match setup {
+        Some(setup_cmd) => {
+            cmd.args(["/bin/bash", "-c", &format!("{setup_cmd} && exec /bin/bash")]);
+        }
+        None => {
+            cmd.arg("/bin/bash");
+        }
+    }
 
     let status = cmd.status().context("failed to run docker")?;
     if !status.success() {

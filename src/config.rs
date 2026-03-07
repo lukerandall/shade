@@ -21,6 +21,7 @@ struct RawConfig {
     env_dir: Option<String>,
     code_dirs: Option<Vec<String>>,
     default_image: Option<String>,
+    setup: Option<String>,
     #[serde(default)]
     env: HashMap<String, EnvValue>,
 }
@@ -30,6 +31,7 @@ pub struct Config {
     pub env_dir: String,
     pub code_dirs: Vec<String>,
     pub default_image: String,
+    pub setup: Option<String>,
     pub env: HashMap<String, EnvValue>,
 }
 
@@ -83,6 +85,7 @@ impl Config {
             env_dir,
             code_dirs,
             default_image,
+            setup: raw.setup,
             env: raw.env,
         })
     }
@@ -92,6 +95,7 @@ impl Config {
             env_dir: Self::default_env_dir(),
             code_dirs: Self::default_code_dirs(),
             default_image: Self::default_image(),
+            setup: None,
             env: HashMap::new(),
         }
     }

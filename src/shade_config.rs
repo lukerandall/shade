@@ -11,6 +11,7 @@ const FILENAME: &str = "shade.toml";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShadeConfig {
     pub image: Option<String>,
+    pub setup: Option<String>,
     #[serde(default)]
     pub env: HashMap<String, EnvValue>,
 }
