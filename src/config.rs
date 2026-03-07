@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::container::ContainerLimits;
 use crate::env_vars::EnvValue;
 
 #[derive(Error, Debug)]
@@ -27,6 +28,8 @@ struct RawConfig {
     mounts: Vec<String>,
     #[serde(default)]
     env: HashMap<String, EnvValue>,
+    #[serde(default)]
+    container: ContainerLimits,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +41,7 @@ pub struct Config {
     pub keychain_prefix: String,
     pub mounts: Vec<String>,
     pub env: HashMap<String, EnvValue>,
+    pub container: ContainerLimits,
 }
 
 impl Config {
@@ -99,6 +103,7 @@ impl Config {
             keychain_prefix,
             mounts,
             env: raw.env,
+            container: raw.container,
         })
     }
 
@@ -111,6 +116,7 @@ impl Config {
             keychain_prefix: Self::default_keychain_prefix(),
             mounts: Vec::new(),
             env: HashMap::new(),
+            container: ContainerLimits::default(),
         }
     }
 

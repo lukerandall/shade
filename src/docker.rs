@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+use crate::container::ContainerLimits;
 use crate::env_vars::{self, EnvValue};
 use crate::shade_config::ShadeConfig;
 
@@ -66,11 +67,13 @@ pub fn run_docker(
     default_image: &str,
     root_env: &HashMap<String, EnvValue>,
     keychain_prefix: &str,
+    container_limits: &ContainerLimits,
 ) -> Result<()> {
     let name = container_name(shade_name);
     let shade_config = ShadeConfig::load(shade_path)?;
     let image = shade_config.image_or(default_image);
     let merged_env = env_vars::merge_env(root_env, &shade_config.env);
+    let limits = container_limits.merge(&shade_config.container);
 
     match inspect_container(&name)? {
         ContainerState::Running => {
@@ -85,15 +88,16 @@ pub fn run_docker(
             let repos = find_repo_dirs(shade_path);
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
             println!("Creating container {name} from {image}...");
-            create_and_run(
-                &name,
+            create_and_run(&CreateOptions {
+                name: &name,
                 shade_path,
-                &repos,
-                &image,
-                &resolved,
-                &shade_config.mounts,
-                shade_config.setup.as_deref(),
-            )?;
+                repos: &repos,
+                image: &image,
+                env: &resolved,
+                mounts: &shade_config.mounts,
+                setup: shade_config.setup.as_deref(),
+                limits: &limits,
+            })?;
         }
     }
 
@@ -121,19 +125,23 @@ fn setup_script(setup: Option<&str>) -> String {
     }
 }
 
-fn create_and_run(
-    name: &str,
-    shade_path: &Path,
-    repos: &[String],
-    image: &str,
-    env: &[(String, String)],
-    mounts: &[String],
-    setup: Option<&str>,
-) -> Result<()> {
+struct CreateOptions<'a> {
+    name: &'a str,
+    shade_path: &'a Path,
+    repos: &'a [String],
+    image: &'a str,
+    env: &'a [(String, String)],
+    mounts: &'a [String],
+    setup: Option<&'a str>,
+    limits: &'a ContainerLimits,
+}
+
+fn create_and_run(opts: &CreateOptions) -> Result<()> {
     let mut cmd = Command::new("docker");
-    cmd.args(["run", "-it", "--name", name, "-w", "/workspace"]);
-    cmd.args(volume_args(shade_path, repos));
-    for mount in mounts {
+    cmd.args(["run", "-it", "--name", opts.name, "-w", "/workspace"]);
+    cmd.args(opts.limits.docker_args());
+    cmd.args(volume_args(opts.shade_path, opts.repos));
+    for mount in opts.mounts {
         let mount_arg = if mount.contains(':') {
             mount.to_string()
         } else {
@@ -141,11 +149,11 @@ fn create_and_run(
         };
         cmd.args(["-v", &mount_arg]);
     }
-    for (key, value) in env {
+    for (key, value) in opts.env {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
-    cmd.arg(image);
-    cmd.args(["/bin/bash", "-c", &setup_script(setup)]);
+    cmd.arg(opts.image);
+    cmd.args(["/bin/bash", "-c", &setup_script(opts.setup)]);
 
     let status = cmd.status().context("failed to run docker")?;
     if !status.success() {

@@ -1,4 +1,5 @@
 mod config;
+mod container;
 mod credentials;
 mod docker;
 mod env;
@@ -197,6 +198,7 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
         &config.default_image,
         &config.env,
         &config.keychain_prefix,
+        &config.container,
     )
 }
 

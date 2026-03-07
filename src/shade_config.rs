@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::container::ContainerLimitsOverride;
 use crate::env_vars::EnvValue;
 
 const FILENAME: &str = "shade.toml";
@@ -16,6 +17,8 @@ pub struct ShadeConfig {
     pub mounts: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, EnvValue>,
+    #[serde(default)]
+    pub container: ContainerLimitsOverride,
 }
 
 impl ShadeConfig {
