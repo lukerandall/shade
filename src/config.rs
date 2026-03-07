@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-use crate::container::ContainerLimits;
+use crate::container::DockerConfig;
 use crate::env_vars::EnvValue;
 
 #[derive(Error, Debug)]
@@ -21,27 +21,20 @@ pub enum ConfigError {
 struct RawConfig {
     env_dir: Option<String>,
     code_dirs: Option<Vec<String>>,
-    default_image: Option<String>,
-    setup: Option<String>,
     keychain_prefix: Option<String>,
-    #[serde(default)]
-    mounts: Vec<String>,
     #[serde(default)]
     env: HashMap<String, EnvValue>,
     #[serde(default)]
-    container: ContainerLimits,
+    docker: DockerConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub env_dir: String,
     pub code_dirs: Vec<String>,
-    pub default_image: String,
-    pub setup: Option<String>,
     pub keychain_prefix: String,
-    pub mounts: Vec<String>,
     pub env: HashMap<String, EnvValue>,
-    pub container: ContainerLimits,
+    pub docker: DockerConfig,
 }
 
 impl Config {
@@ -88,22 +81,21 @@ impl Config {
             None => Self::default_code_dirs(),
         };
 
-        let default_image = raw.default_image.unwrap_or_else(Self::default_image);
         let keychain_prefix = raw
             .keychain_prefix
             .unwrap_or_else(Self::default_keychain_prefix);
 
-        let mounts = raw.mounts.iter().map(|m| expand_tilde(m)).collect();
+        let docker = DockerConfig {
+            mounts: raw.docker.mounts.iter().map(|m| expand_tilde(m)).collect(),
+            ..raw.docker
+        };
 
         Ok(Config {
             env_dir,
             code_dirs,
-            default_image,
-            setup: raw.setup,
             keychain_prefix,
-            mounts,
             env: raw.env,
-            container: raw.container,
+            docker,
         })
     }
 
@@ -111,17 +103,10 @@ impl Config {
         Config {
             env_dir: Self::default_env_dir(),
             code_dirs: Self::default_code_dirs(),
-            default_image: Self::default_image(),
-            setup: None,
             keychain_prefix: Self::default_keychain_prefix(),
-            mounts: Vec::new(),
             env: HashMap::new(),
-            container: ContainerLimits::default(),
+            docker: DockerConfig::default(),
         }
-    }
-
-    fn default_image() -> String {
-        "ubuntu:latest".to_string()
     }
 
     fn default_keychain_prefix() -> String {
@@ -137,8 +122,13 @@ impl Config {
         struct FileConfig {
             env_dir: String,
             code_dirs: Vec<String>,
-            default_image: String,
             keychain_prefix: String,
+            docker: FileDockerConfig,
+        }
+
+        #[derive(Serialize)]
+        struct FileDockerConfig {
+            image: String,
         }
 
         let config = FileConfig {
@@ -147,8 +137,10 @@ impl Config {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            default_image: Self::default_image(),
             keychain_prefix: Self::default_keychain_prefix(),
+            docker: FileDockerConfig {
+                image: "ubuntu:latest".to_string(),
+            },
         };
 
         toml::to_string_pretty(&config).expect("failed to serialize default config")

@@ -4,21 +4,17 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::container::ContainerLimitsOverride;
+use crate::container::DockerConfigOverride;
 use crate::env_vars::EnvValue;
 
 const FILENAME: &str = "shade.toml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShadeConfig {
-    pub image: Option<String>,
-    pub setup: Option<String>,
-    #[serde(default)]
-    pub mounts: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, EnvValue>,
     #[serde(default)]
-    pub container: ContainerLimitsOverride,
+    pub docker: DockerConfigOverride,
 }
 
 impl ShadeConfig {
@@ -40,11 +36,6 @@ impl ShadeConfig {
         std::fs::write(&path, contents)
             .with_context(|| format!("failed to write {}", path.display()))
     }
-
-    /// Resolve the image to use, falling back to the provided default.
-    pub fn image_or(&self, default: &str) -> String {
-        self.image.as_deref().unwrap_or(default).to_string()
-    }
 }
 
 #[cfg(test)]
@@ -56,42 +47,40 @@ mod tests {
     fn test_default_when_no_file() {
         let tmp = TempDir::new().unwrap();
         let config = ShadeConfig::load(tmp.path()).unwrap();
-        assert!(config.image.is_none());
+        assert!(config.docker.image.is_none());
     }
 
     #[test]
     fn test_load_with_image() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("shade.toml"), "image = \"node:20\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("shade.toml"),
+            "[docker]\nimage = \"node:20\"\n",
+        )
+        .unwrap();
         let config = ShadeConfig::load(tmp.path()).unwrap();
-        assert_eq!(config.image.as_deref(), Some("node:20"));
+        assert_eq!(config.docker.image.as_deref(), Some("node:20"));
     }
 
     #[test]
     fn test_save_and_reload() {
         let tmp = TempDir::new().unwrap();
         let config = ShadeConfig {
-            image: Some("rust:latest".to_string()),
+            docker: DockerConfigOverride {
+                image: Some("rust:latest".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         config.save(tmp.path()).unwrap();
 
         let loaded = ShadeConfig::load(tmp.path()).unwrap();
-        assert_eq!(loaded.image.as_deref(), Some("rust:latest"));
+        assert_eq!(loaded.docker.image.as_deref(), Some("rust:latest"));
     }
 
     #[test]
-    fn test_image_or_uses_override() {
-        let config = ShadeConfig {
-            image: Some("alpine:3".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(config.image_or("ubuntu:latest"), "alpine:3");
-    }
-
-    #[test]
-    fn test_image_or_falls_back() {
+    fn test_image_defaults_to_none() {
         let config = ShadeConfig::default();
-        assert_eq!(config.image_or("ubuntu:latest"), "ubuntu:latest");
+        assert!(config.docker.image.is_none());
     }
 }

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-use crate::container::ContainerLimits;
+use crate::container::{ContainerLimits, DockerConfig};
 use crate::env_vars::{self, EnvValue};
 use crate::shade_config::ShadeConfig;
 
@@ -64,16 +64,14 @@ fn volume_args(shade_path: &Path, repo_names: &[String]) -> Vec<String> {
 pub fn run_docker(
     shade_name: &str,
     shade_path: &Path,
-    default_image: &str,
+    root_docker: &DockerConfig,
     root_env: &HashMap<String, EnvValue>,
     keychain_prefix: &str,
-    container_limits: &ContainerLimits,
 ) -> Result<()> {
     let name = container_name(shade_name);
     let shade_config = ShadeConfig::load(shade_path)?;
-    let image = shade_config.image_or(default_image);
+    let docker = root_docker.merge(&shade_config.docker);
     let merged_env = env_vars::merge_env(root_env, &shade_config.env);
-    let limits = container_limits.merge(&shade_config.container);
 
     match inspect_container(&name)? {
         ContainerState::Running => {
@@ -91,13 +89,13 @@ pub fn run_docker(
             // Use prebuilt image if available (setup already baked in).
             // Always pass the setup script — it checks a hash marker and
             // only re-runs if the setup command has changed.
-            let effective_image = if prebuilt_image_exists(&image, shade_config.setup.as_deref()) {
-                let prebuilt = prebuilt_image_name(&image, shade_config.setup.as_deref());
+            let effective_image = if prebuilt_image_exists(&docker.image, docker.setup.as_deref()) {
+                let prebuilt = prebuilt_image_name(&docker.image, docker.setup.as_deref());
                 println!("Creating container {name} from prebuilt image...");
                 prebuilt
             } else {
-                println!("Creating container {name} from {image}...");
-                image.clone()
+                println!("Creating container {name} from {}...", docker.image);
+                docker.image.clone()
             };
 
             create_and_run(&CreateOptions {
@@ -106,9 +104,10 @@ pub fn run_docker(
                 repos: &repos,
                 image: &effective_image,
                 env: &resolved,
-                mounts: &shade_config.mounts,
-                setup: shade_config.setup.as_deref(),
-                limits: &limits,
+                mounts: &docker.mounts,
+                setup: docker.setup.as_deref(),
+                user: docker.user.as_deref(),
+                limits: &docker.limits,
             })?;
         }
     }
@@ -146,12 +145,16 @@ struct CreateOptions<'a> {
     env: &'a [(String, String)],
     mounts: &'a [String],
     setup: Option<&'a str>,
+    user: Option<&'a str>,
     limits: &'a ContainerLimits,
 }
 
 fn create_and_run(opts: &CreateOptions) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(["run", "-it", "--name", opts.name, "-w", "/workspace"]);
+    if let Some(user) = opts.user {
+        cmd.args(["-u", user]);
+    }
     cmd.args(opts.limits.docker_args());
     cmd.args(volume_args(opts.shade_path, opts.repos));
     for mount in opts.mounts {

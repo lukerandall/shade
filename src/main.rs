@@ -209,10 +209,9 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
     docker::run_docker(
         &shade_name,
         &shade_path,
-        &config.default_image,
+        &config.docker,
         &config.env,
         &config.keychain_prefix,
-        &config.container,
     )
 }
 
@@ -349,10 +348,10 @@ fn main() -> Result<()> {
         Command::Docker(DockerCommand::Build) => {
             let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
             docker::build_image(
-                &config.default_image,
-                config.setup.as_deref(),
+                &config.docker.image,
+                config.docker.setup.as_deref(),
                 &resolved,
-                &config.container,
+                &config.docker.limits,
             )?;
             Ok(())
         }
@@ -388,8 +387,6 @@ fn main() -> Result<()> {
                 tui::TuiResult::Create(label) => {
                     let environment = env::create_environment(&config.env_dir, &label)?;
                     let shade_cfg = shade_config::ShadeConfig {
-                        setup: config.setup.clone(),
-                        mounts: config.mounts.clone(),
                         env: config.env.clone(),
                         ..Default::default()
                     };

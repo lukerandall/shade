@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn default_image() -> String {
+    "ubuntu:latest".to_string()
+}
+
 fn default_memory() -> String {
     "4g".to_string()
 }
@@ -22,6 +26,60 @@ fn default_cap_add() -> Vec<String> {
 
 fn default_no_new_privileges() -> bool {
     true
+}
+
+/// Docker configuration from the root config `[docker]` section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DockerConfig {
+    #[serde(default = "default_image")]
+    pub image: String,
+    pub setup: Option<String>,
+    pub user: Option<String>,
+    #[serde(default)]
+    pub mounts: Vec<String>,
+    #[serde(default)]
+    pub limits: ContainerLimits,
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            image: default_image(),
+            setup: None,
+            user: None,
+            mounts: Vec::new(),
+            limits: ContainerLimits::default(),
+        }
+    }
+}
+
+/// Docker overrides from the per-shade `[docker]` section.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DockerConfigOverride {
+    pub image: Option<String>,
+    pub setup: Option<String>,
+    pub user: Option<String>,
+    pub mounts: Option<Vec<String>>,
+    #[serde(default)]
+    pub limits: ContainerLimitsOverride,
+}
+
+impl DockerConfig {
+    pub fn merge(&self, overrides: &DockerConfigOverride) -> Self {
+        Self {
+            image: overrides
+                .image
+                .clone()
+                .unwrap_or_else(|| self.image.clone()),
+            setup: overrides.setup.clone().or_else(|| self.setup.clone()),
+            user: overrides.user.clone().or_else(|| self.user.clone()),
+            mounts: overrides
+                .mounts
+                .clone()
+                .unwrap_or_else(|| self.mounts.clone()),
+            limits: self.limits.merge(&overrides.limits),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
