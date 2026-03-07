@@ -50,13 +50,13 @@ const FISH_FUNCTION: &str = r#"function s --description "Open a shade environmen
             if test -n "$path"
                 cd "$path"
             end
-        case docker list delete config init help version
-            command shade $argv
-        case '*'
+        case ''
             set -l path (command shade new $argv | tail -n 1)
             if test -n "$path"
                 cd "$path"
             end
+        case '*'
+            command shade $argv
     end
 end
 "#;
@@ -70,15 +70,15 @@ const BASH_FUNCTION: &str = r#"s() {
                 cd "$path" || return
             fi
             ;;
-        docker|list|delete|config|init|help|version)
-            command shade "$@"
-            ;;
-        *)
+        "")
             local path
-            path="$(command shade new "$@" | tail -n 1)"
+            path="$(command shade new | tail -n 1)"
             if [ -n "$path" ]; then
                 cd "$path" || return
             fi
+            ;;
+        *)
+            command shade "$@"
             ;;
     esac
 }
@@ -93,15 +93,15 @@ const ZSH_FUNCTION: &str = r#"s() {
                 cd "$path" || return
             fi
             ;;
-        docker|list|delete|config|init|help|version)
-            command shade "$@"
-            ;;
-        *)
+        "")
             local path
-            path="$(command shade new "$@" | tail -n 1)"
+            path="$(command shade new | tail -n 1)"
             if [[ -n "$path" ]]; then
                 cd "$path" || return
             fi
+            ;;
+        *)
+            command shade "$@"
             ;;
     esac
 }
