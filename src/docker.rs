@@ -222,7 +222,8 @@ fn exec_into(name: &str, session: &str, mux: Option<&MultiplexerKind>) -> Result
         Some(kind) => {
             let m = kind.get();
             let attach = m.attach_cmd(session);
-            cmd.args(["/bin/bash", "-c", &attach]);
+            let script = format!("source ~/.bashrc 2>/dev/null; {attach}");
+            cmd.args(["/bin/bash", "-c", &script]);
         }
         None => {
             cmd.arg("/bin/bash");
