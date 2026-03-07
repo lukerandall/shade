@@ -128,6 +128,7 @@ fn hash_setup(cmd: &str) -> u64 {
 fn setup_script(setup: Option<&str>) -> String {
     match setup {
         Some(cmd) => {
+            let cmd = cmd.trim();
             let hash = hash_setup(cmd);
             format!(
                 "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi && exec /bin/bash"
@@ -230,6 +231,7 @@ pub fn build_image(
 
     match setup {
         Some(setup_cmd) => {
+            let setup_cmd = setup_cmd.trim();
             let hash = hash_setup(setup_cmd);
             let build_script = format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}");
             cmd.args(["/bin/bash", "-c", &build_script]);
