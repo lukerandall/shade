@@ -57,39 +57,28 @@ fn volume_args(shade_path: &Path, repo_names: &[String]) -> Vec<String> {
     args
 }
 
-pub struct DockerAction {
-    pub message: String,
-}
-
-pub fn run_docker(
-    shade_name: &str,
-    shade_path: &Path,
-    default_image: &str,
-) -> Result<DockerAction> {
+pub fn run_docker(shade_name: &str, shade_path: &Path, default_image: &str) -> Result<()> {
     let name = container_name(shade_name);
     let shade_config = ShadeConfig::load(shade_path)?;
     let image = shade_config.image_or(default_image);
 
-    let message = match inspect_container(&name)? {
+    match inspect_container(&name)? {
         ContainerState::Running => {
-            let msg = format!("Attaching to running container {name}...");
+            println!("Attaching to running container {name}...");
             exec_into(&name)?;
-            msg
         }
         ContainerState::Stopped => {
-            let msg = format!("Starting stopped container {name}...");
+            println!("Starting stopped container {name}...");
             start_container(&name)?;
-            msg
         }
         ContainerState::NotFound => {
             let repos = find_repo_dirs(shade_path);
-            let msg = format!("Creating container {name} from {image}...");
+            println!("Creating container {name} from {image}...");
             create_and_run(&name, shade_path, &repos, &image)?;
-            msg
         }
-    };
+    }
 
-    Ok(DockerAction { message })
+    Ok(())
 }
 
 fn create_and_run(name: &str, shade_path: &Path, repos: &[String], image: &str) -> Result<()> {
