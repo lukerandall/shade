@@ -162,6 +162,7 @@ fn main() -> Result<()> {
         }
         tui::TuiResult::Create(label) => {
             let environment = env::create_environment(&config.env_dir, &label)?;
+            shade_config::ShadeConfig::default().save(&environment.path)?;
 
             if !cli.skip_repos {
                 select_and_create_workspaces(&vcs, &config, &environment.path, &label)?;
