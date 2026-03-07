@@ -1,4 +1,5 @@
 mod config;
+mod docker;
 mod env;
 mod repo_select;
 mod shade_config;
@@ -6,7 +7,7 @@ mod slug;
 mod tui;
 mod vcs;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use vcs::Vcs;
@@ -38,6 +39,8 @@ enum Command {
         /// Shell to generate integration for
         shell: String,
     },
+    /// Start or attach to a Docker container for the current shade
+    Docker,
 }
 
 fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
@@ -104,6 +107,33 @@ fn delete_shade(
     Ok(())
 }
 
+fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
+    let cwd = std::env::current_dir().context("could not determine current directory")?;
+    let env_dir = std::path::Path::new(&config.env_dir)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(&config.env_dir));
+
+    // Walk up from cwd to find a directory that's a direct child of env_dir
+    let mut candidate = Some(cwd.as_path());
+    let shade_path = loop {
+        match candidate {
+            Some(path) if path.parent() == Some(&env_dir) => break path.to_path_buf(),
+            Some(path) => candidate = path.parent(),
+            None => anyhow::bail!(
+                "not inside a shade environment (expected to be under {})",
+                config.env_dir
+            ),
+        }
+    };
+
+    let shade_name = shade_path
+        .file_name()
+        .context("invalid shade path")?
+        .to_string_lossy();
+
+    docker::run_docker(&shade_name, &shade_path, &config.default_image)
+}
+
 fn print_shell_init(shell: &str) -> Result<()> {
     match shell {
         "fish" => print!(
@@ -148,6 +178,10 @@ fn main() -> Result<()> {
     }
 
     let config = config::Config::load()?;
+
+    if let Some(Command::Docker) = &cli.command {
+        return run_docker_for_current_shade(&config);
+    }
     let vcs = JjVcs;
 
     let delete_handler =
