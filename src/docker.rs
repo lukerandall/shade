@@ -150,3 +150,22 @@ fn exec_into(name: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// Remove a container if it exists (stopped or running). Silently succeeds if not found.
+pub fn remove_container(shade_name: &str) -> Result<()> {
+    let name = container_name(shade_name);
+    match inspect_container(&name)? {
+        ContainerState::NotFound => Ok(()),
+        _ => {
+            let output = Command::new("docker")
+                .args(["rm", "-f", &name])
+                .output()
+                .context("failed to remove container")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("failed to remove container {name}: {stderr}");
+            }
+            Ok(())
+        }
+    }
+}

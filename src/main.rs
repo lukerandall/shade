@@ -39,6 +39,11 @@ enum Command {
     },
     /// List existing shade environments
     List,
+    /// Delete a shade environment
+    Delete {
+        /// Name of the shade to delete (e.g. 2026-03-07-my-feature)
+        name: String,
+    },
     /// Start or attach to a Docker container for the current shade
     Docker,
 
@@ -100,18 +105,21 @@ fn delete_shade(
     vcs: &impl Vcs,
     config: &config::Config,
 ) -> Result<()> {
-    // Find workspace directories inside the shade and forget them in the source repos
+    // Clean up jj workspaces
     let workspace_names = detect_existing_workspaces(&environment.path);
     if !workspace_names.is_empty() {
         let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
         for ws_name in &workspace_names {
             if let Some(repo) = repos.iter().find(|r| &r.name == ws_name) {
-                // Silently forget — we're inside the TUI, can't print
                 let _ = vcs.remove_workspace(repo, &environment.label);
             }
         }
     }
 
+    // Clean up docker container
+    docker::remove_container(&environment.name)?;
+
+    // Remove the shade directory
     env::delete_environment(environment)?;
     Ok(())
 }
@@ -222,6 +230,18 @@ fn main() -> Result<()> {
                     println!("{}", environment.name);
                 }
             }
+            Ok(())
+        }
+        Command::Delete { ref name } => {
+            let environments = env::list_environments(&config.env_dir)?;
+            let environment = environments
+                .iter()
+                .find(|e| e.name == *name)
+                .with_context(|| format!("shade not found: {name}"))?;
+
+            let vcs = JjVcs;
+            delete_shade(environment, &vcs, &config)?;
+            println!("Deleted {name}");
             Ok(())
         }
         Command::Docker => run_docker_for_current_shade(&config),
