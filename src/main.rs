@@ -14,7 +14,7 @@ use vcs::Vcs;
 use vcs::jj::JjVcs;
 
 #[derive(Parser)]
-#[command(name = "shade", about = "Ephemeral development environments")]
+#[command(name = "shade", about = "Ephemeral development environments", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
