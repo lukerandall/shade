@@ -85,10 +85,10 @@ fn select_and_create_workspaces(
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
             for repo in &selected {
-                print!("Creating workspace for {}... ", repo.name);
+                eprint!("Creating workspace for {}... ", repo.name);
                 match vcs.create_workspace(repo, env_path, workspace_name) {
-                    Ok(()) => println!("done"),
-                    Err(e) => println!("failed: {}", e),
+                    Ok(()) => eprintln!("done"),
+                    Err(e) => eprintln!("failed: {}", e),
                 }
             }
         }
