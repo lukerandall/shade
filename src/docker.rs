@@ -99,6 +99,17 @@ pub fn run_docker(
     Ok(())
 }
 
+const SETUP_MARKER: &str = "/tmp/.shade-setup-done";
+
+fn setup_script(setup: Option<&str>) -> String {
+    match setup {
+        Some(cmd) => format!(
+            "if [ ! -f {SETUP_MARKER} ]; then {cmd} && touch {SETUP_MARKER}; fi && exec /bin/bash"
+        ),
+        None => "exec /bin/bash".to_string(),
+    }
+}
+
 fn create_and_run(
     name: &str,
     shade_path: &Path,
@@ -118,14 +129,7 @@ fn create_and_run(
         cmd.args(["-e", &format!("{key}={value}")]);
     }
     cmd.arg(image);
-    match setup {
-        Some(setup_cmd) => {
-            cmd.args(["/bin/bash", "-c", &format!("{setup_cmd} && exec /bin/bash")]);
-        }
-        None => {
-            cmd.arg("/bin/bash");
-        }
-    }
+    cmd.args(["/bin/bash", "-c", &setup_script(setup)]);
 
     let status = cmd.status().context("failed to run docker")?;
     if !status.success() {
