@@ -99,7 +99,7 @@ pub fn run_docker(
     Ok(())
 }
 
-const SETUP_MARKER: &str = "/tmp/.shade-setup-done";
+const SETUP_MARKER: &str = "/workspace/.shade-setup-done";
 
 fn setup_script(setup: Option<&str>) -> String {
     match setup {
