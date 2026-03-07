@@ -24,6 +24,14 @@ struct Cli {
 }
 
 #[derive(clap::Subcommand)]
+enum ConfigCommand {
+    /// Generate a default configuration file
+    New,
+    /// Open the configuration file in $EDITOR
+    Edit,
+}
+
+#[derive(clap::Subcommand)]
 enum Command {
     // -- Environment commands --
     /// Create or select a shade environment
@@ -53,8 +61,9 @@ enum Command {
         /// Shell to generate integration for
         shell: String,
     },
-    /// Generate a default configuration file
-    Config,
+    /// Manage the shade configuration file
+    #[command(subcommand)]
+    Config(ConfigCommand),
 }
 
 fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
@@ -229,9 +238,21 @@ fn main() -> Result<()> {
             print!("{}", shell_init(shell)?);
             return Ok(());
         }
-        Command::Config => {
+        Command::Config(ConfigCommand::New) => {
             let path = generate_config()?;
             println!("Created config file: {}", path.display());
+            return Ok(());
+        }
+        Command::Config(ConfigCommand::Edit) => {
+            let path = config::Config::default_path();
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let status = std::process::Command::new(&editor)
+                .arg(&path)
+                .status()
+                .with_context(|| format!("failed to launch editor: {editor}"))?;
+            if !status.success() {
+                anyhow::bail!("editor exited with {status}");
+            }
             return Ok(());
         }
         _ => {}
@@ -302,6 +323,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Init { .. } | Command::Config => unreachable!(),
+        Command::Init { .. } | Command::Config(_) => unreachable!(),
     }
 }

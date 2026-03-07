@@ -123,7 +123,12 @@ fn create_and_run(
     cmd.args(["run", "-it", "--name", name, "-w", "/workspace"]);
     cmd.args(volume_args(shade_path, repos));
     for mount in mounts {
-        cmd.args(["-v", &format!("{mount}:{mount}")]);
+        let mount_arg = if mount.contains(':') {
+            mount.to_string()
+        } else {
+            format!("{mount}:{mount}")
+        };
+        cmd.args(["-v", &mount_arg]);
     }
     for (key, value) in env {
         cmd.args(["-e", &format!("{key}={value}")]);
