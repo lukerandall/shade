@@ -41,6 +41,8 @@ enum Command {
     },
     /// Start or attach to a Docker container for the current shade
     Docker,
+    /// Generate a default configuration file
+    Config,
 }
 
 fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
@@ -134,6 +136,26 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
     docker::run_docker(&shade_name, &shade_path, &config.default_image)
 }
 
+fn generate_config() -> Result<()> {
+    let path = config::Config::default_path();
+
+    if path.exists() {
+        anyhow::bail!("config file already exists: {}", path.display());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+    }
+
+    let contents = config::Config::generate_default();
+    std::fs::write(&path, &contents)
+        .with_context(|| format!("failed to write config file: {}", path.display()))?;
+
+    eprintln!("Created config file: {}", path.display());
+    Ok(())
+}
+
 fn print_shell_init(shell: &str) -> Result<()> {
     match shell {
         "fish" => print!(
@@ -173,8 +195,10 @@ end
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(Command::Init { shell }) = &cli.command {
-        return print_shell_init(shell);
+    match &cli.command {
+        Some(Command::Init { shell }) => return print_shell_init(shell),
+        Some(Command::Config) => return generate_config(),
+        _ => {}
     }
 
     let config = config::Config::load()?;

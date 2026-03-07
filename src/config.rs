@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -89,6 +89,31 @@ impl Config {
 
     fn default_image() -> String {
         "ubuntu:latest".to_string()
+    }
+
+    /// Generate a default config file as a TOML string with human-friendly paths.
+    pub fn generate_default() -> String {
+        #[derive(Serialize)]
+        struct FileConfig {
+            env_dir: String,
+            code_dirs: Vec<String>,
+            default_image: String,
+        }
+
+        let config = FileConfig {
+            env_dir: "~/Shades".to_string(),
+            code_dirs: vec!["~/Code".to_string()],
+            default_image: Self::default_image(),
+        };
+
+        toml::to_string_pretty(&config).expect("failed to serialize default config")
+    }
+
+    /// Return the default config file path.
+    pub fn default_path() -> PathBuf {
+        dirs::home_dir()
+            .map(|h| h.join(".config").join("shade").join("config.toml"))
+            .unwrap_or_else(|| PathBuf::from(".config/shade/config.toml"))
     }
 
     fn default_code_dirs() -> Vec<String> {
