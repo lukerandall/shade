@@ -110,6 +110,9 @@ const ZSH_FUNCTION: &str = r#"s() {
 const FISH_COMPLETIONS: &str = r#"# Dynamic completions for shade names
 complete -c shade -n '__fish_seen_subcommand_from cd' -f -a '(command shade list 2>/dev/null)'
 complete -c shade -n '__fish_seen_subcommand_from delete' -f -a '(command shade list 2>/dev/null)'
+
+# Copy all shade completions to the s function
+complete -c s -w shade
 "#;
 
 const BASH_COMPLETIONS: &str = r#"# Dynamic completions for shade names
@@ -124,6 +127,7 @@ _shade_complete() {
     esac
 }
 complete -F _shade_complete shade
+complete -F _shade_complete s
 "#;
 
 const ZSH_COMPLETIONS: &str = r#"# Dynamic completions for shade names
@@ -139,4 +143,5 @@ _shade() {
     esac
 }
 compdef _shade shade
+compdef _shade s
 "#;
