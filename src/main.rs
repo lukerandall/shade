@@ -1,4 +1,6 @@
 mod config;
+#[allow(dead_code)]
+mod credentials;
 mod docker;
 mod env;
 mod repo_select;
