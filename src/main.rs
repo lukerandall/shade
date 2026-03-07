@@ -173,28 +173,47 @@ fn generate_config() -> Result<std::path::PathBuf> {
 fn shell_init(shell: &str) -> Result<String> {
     match shell {
         "fish" => Ok(r#"function s --description "Open a shade environment"
-    set -l path (command shade new $argv | tail -n 1)
-    if test -n "$path"
-        cd "$path"
+    switch "$argv[1]"
+        case docker list delete config init help
+            command shade $argv
+        case '*'
+            set -l path (command shade new $argv | tail -n 1)
+            if test -n "$path"
+                cd "$path"
+            end
     end
 end
 "#
         .to_string()),
         "bash" => Ok(r#"s() {
-    local path
-    path="$(command shade new "$@" | tail -n 1)"
-    if [ -n "$path" ]; then
-        cd "$path" || return
-    fi
+    case "$1" in
+        docker|list|delete|config|init|help)
+            command shade "$@"
+            ;;
+        *)
+            local path
+            path="$(command shade new "$@" | tail -n 1)"
+            if [ -n "$path" ]; then
+                cd "$path" || return
+            fi
+            ;;
+    esac
 }
 "#
         .to_string()),
         "zsh" => Ok(r#"s() {
-    local path
-    path="$(command shade new "$@" | tail -n 1)"
-    if [[ -n "$path" ]]; then
-        cd "$path" || return
-    fi
+    case "$1" in
+        docker|list|delete|config|init|help)
+            command shade "$@"
+            ;;
+        *)
+            local path
+            path="$(command shade new "$@" | tail -n 1)"
+            if [[ -n "$path" ]]; then
+                cd "$path" || return
+            fi
+            ;;
+    esac
 }
 "#
         .to_string()),
