@@ -16,12 +16,14 @@ pub enum ConfigError {
 struct RawConfig {
     env_dir: Option<String>,
     code_dirs: Option<Vec<String>>,
+    default_image: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub env_dir: String,
     pub code_dirs: Vec<String>,
+    pub default_image: String,
 }
 
 impl Config {
@@ -68,14 +70,25 @@ impl Config {
             None => Self::default_code_dirs(),
         };
 
-        Ok(Config { env_dir, code_dirs })
+        let default_image = raw.default_image.unwrap_or_else(Self::default_image);
+
+        Ok(Config {
+            env_dir,
+            code_dirs,
+            default_image,
+        })
     }
 
     fn defaults() -> Self {
         Config {
             env_dir: Self::default_env_dir(),
             code_dirs: Self::default_code_dirs(),
+            default_image: Self::default_image(),
         }
+    }
+
+    fn default_image() -> String {
+        "ubuntu:latest".to_string()
     }
 
     fn default_code_dirs() -> Vec<String> {
