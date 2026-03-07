@@ -95,14 +95,15 @@ pub fn run_docker(
             // Use prebuilt image if available (setup already baked in).
             // Always pass the setup script — it checks a hash marker and
             // only re-runs if the setup command has changed.
-            let effective_image = if prebuilt_image_exists(&docker.image, docker.setup.as_deref()) {
-                let prebuilt = prebuilt_image_name(&docker.image, docker.setup.as_deref());
-                println!("Creating container {name} from prebuilt image...");
-                prebuilt
-            } else {
-                println!("Creating container {name} from {}...", docker.image);
-                docker.image.clone()
-            };
+            let effective_image =
+                if prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux) {
+                    let prebuilt = prebuilt_image_name(&docker.image, docker.setup.as_deref(), mux);
+                    println!("Creating container {name} from prebuilt image...");
+                    prebuilt
+                } else {
+                    println!("Creating container {name} from {}...", docker.image);
+                    docker.image.clone()
+                };
 
             create_and_run(&CreateOptions {
                 name: &name,
@@ -243,7 +244,7 @@ pub fn build_image(
     env: &[(String, String)],
     limits: &ContainerLimits,
 ) -> Result<String> {
-    let image_tag = prebuilt_image_name(base_image, setup);
+    let image_tag = prebuilt_image_name(base_image, setup, multiplexer);
 
     // Check if image already exists
     let check = Command::new("docker")
@@ -316,23 +317,33 @@ pub fn build_image(
     Ok(image_tag)
 }
 
-/// Check if a prebuilt image exists for the given base image + setup combo.
-pub fn prebuilt_image_exists(base_image: &str, setup: Option<&str>) -> bool {
-    let tag = prebuilt_image_name(base_image, setup);
+/// Check if a prebuilt image exists for the given base image + setup + multiplexer combo.
+pub fn prebuilt_image_exists(
+    base_image: &str,
+    setup: Option<&str>,
+    multiplexer: Option<&MultiplexerKind>,
+) -> bool {
+    let tag = prebuilt_image_name(base_image, setup, multiplexer);
     Command::new("docker")
         .args(["image", "inspect", &tag])
         .output()
         .is_ok_and(|o| o.status.success())
 }
 
-fn prebuilt_image_name(base_image: &str, setup: Option<&str>) -> String {
-    let hash = match setup {
-        Some(cmd) => {
-            let combined = format!("{base_image}:{cmd}");
-            hash_setup(&combined)
-        }
-        None => hash_setup(base_image),
+fn prebuilt_image_name(
+    base_image: &str,
+    setup: Option<&str>,
+    multiplexer: Option<&MultiplexerKind>,
+) -> String {
+    let mux_str = match multiplexer {
+        Some(kind) => kind.get().name().to_string(),
+        None => String::new(),
     };
+    let combined = format!(
+        "{base_image}:{setup}:{mux_str}",
+        setup = setup.unwrap_or("")
+    );
+    let hash = hash_setup(&combined);
     format!("shade-prebuilt:{hash:x}")
 }
 
