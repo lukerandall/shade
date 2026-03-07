@@ -99,13 +99,23 @@ pub fn run_docker(
     Ok(())
 }
 
-const SETUP_MARKER: &str = "/root/.shade-setup-done";
+const SETUP_MARKER: &str = "/root/.shade-setup-hash";
+
+fn hash_setup(cmd: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cmd.hash(&mut hasher);
+    hasher.finish()
+}
 
 fn setup_script(setup: Option<&str>) -> String {
     match setup {
-        Some(cmd) => format!(
-            "if [ ! -f {SETUP_MARKER} ]; then {cmd} && touch {SETUP_MARKER}; fi && exec /bin/bash"
-        ),
+        Some(cmd) => {
+            let hash = hash_setup(cmd);
+            format!(
+                "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi && exec /bin/bash"
+            )
+        }
         None => "exec /bin/bash".to_string(),
     }
 }
