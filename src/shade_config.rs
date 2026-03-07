@@ -19,24 +19,19 @@ impl ShadeConfig {
         let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
 
-        toml::from_str(&contents)
-            .with_context(|| format!("failed to parse {}", path.display()))
+        toml::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))
     }
 
     pub fn save(&self, shade_dir: &Path) -> Result<()> {
         let path = shade_dir.join(FILENAME);
-        let contents =
-            toml::to_string_pretty(self).context("failed to serialize shade config")?;
+        let contents = toml::to_string_pretty(self).context("failed to serialize shade config")?;
         std::fs::write(&path, contents)
             .with_context(|| format!("failed to write {}", path.display()))
     }
 
     /// Resolve the image to use, falling back to the provided default.
     pub fn image_or(&self, default: &str) -> String {
-        self.image
-            .as_deref()
-            .unwrap_or(default)
-            .to_string()
+        self.image.as_deref().unwrap_or(default).to_string()
     }
 }
 

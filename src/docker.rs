@@ -52,11 +52,7 @@ fn volume_args(shade_path: &Path, repo_names: &[String]) -> Vec<String> {
     for name in repo_names {
         let host_path = shade_path.join(name);
         args.push("-v".to_string());
-        args.push(format!(
-            "{}:/workspace/{}",
-            host_path.display(),
-            name
-        ));
+        args.push(format!("{}:/workspace/{}", host_path.display(), name));
     }
     args
 }
@@ -85,12 +81,7 @@ pub fn run_docker(shade_name: &str, shade_path: &Path, default_image: &str) -> R
     Ok(())
 }
 
-fn create_and_run(
-    name: &str,
-    shade_path: &Path,
-    repos: &[String],
-    image: &str,
-) -> Result<()> {
+fn create_and_run(name: &str, shade_path: &Path, repos: &[String], image: &str) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(["run", "-it", "--name", name, "-w", "/workspace"]);
     cmd.args(volume_args(shade_path, repos));
