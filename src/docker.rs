@@ -85,6 +85,7 @@ pub fn run_docker(
             println!("Starting stopped container {name}...");
             start_container(&name, mux)?;
             if mux.is_some() {
+                wait_for_ready(&name)?;
                 exec_into(&name, shade_name, mux)?;
             }
         }
@@ -120,6 +121,7 @@ pub fn run_docker(
             })?;
 
             if mux.is_some() {
+                wait_for_ready(&name)?;
                 exec_into(&name, shade_name, mux)?;
             }
         }
@@ -129,6 +131,7 @@ pub fn run_docker(
 }
 
 const SETUP_MARKER: &str = "/root/.shade-setup-hash";
+const READY_MARKER: &str = "/root/.shade-ready";
 
 fn hash_setup(cmd: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -165,6 +168,10 @@ fn setup_script(setup: Option<&str>, mux: Option<&MultiplexerKind>, detach: bool
 
     if let Some(install) = mux_install {
         parts.push(install);
+    }
+
+    if detach {
+        parts.push(format!("touch {READY_MARKER}"));
     }
 
     parts.push(tail.to_string());
@@ -220,6 +227,24 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
         bail!("docker run exited with {status}");
     }
     Ok(())
+}
+
+fn wait_for_ready(name: &str) -> Result<()> {
+    use std::io::Write;
+    print!("Waiting for container setup to complete...");
+    std::io::stdout().flush().ok();
+    for _ in 0..600 {
+        let output = Command::new("docker")
+            .args(["exec", name, "test", "-f", READY_MARKER])
+            .output()
+            .context("failed to check container readiness")?;
+        if output.status.success() {
+            println!(" done");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    bail!("timed out waiting for container setup (10 minutes)")
 }
 
 fn start_container(name: &str, mux: Option<&MultiplexerKind>) -> Result<()> {
