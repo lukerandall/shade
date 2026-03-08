@@ -114,6 +114,7 @@ pub fn run_docker(
                 mounts: &docker.mounts,
                 setup: docker.setup.as_deref(),
                 user: docker.user.as_deref(),
+                multiplexer: mux,
                 limits: &docker.limits,
                 detach: mux.is_some(),
             })?;
@@ -136,22 +137,35 @@ fn hash_setup(cmd: &str) -> u64 {
     hasher.finish()
 }
 
-fn setup_script(setup: Option<&str>, detach: bool) -> String {
+fn setup_script(setup: Option<&str>, mux: Option<&MultiplexerKind>, detach: bool) -> String {
     let tail = if detach {
         "exec sleep infinity"
     } else {
         "exec /bin/bash"
     };
-    match setup {
-        Some(cmd) => {
-            let cmd = cmd.trim();
-            let hash = hash_setup(cmd);
-            format!(
-                "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi && {tail}"
-            )
-        }
-        None => tail.to_string(),
+
+    let mux_install = mux.map(|kind| {
+        let m = kind.get();
+        let cmd = m.install_cmd();
+        format!("command -v {} >/dev/null 2>&1 || {{ {cmd}; }}", m.name())
+    });
+
+    let mut parts = Vec::new();
+
+    if let Some(cmd) = setup {
+        let cmd = cmd.trim();
+        let hash = hash_setup(cmd);
+        parts.push(format!(
+            "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi"
+        ));
     }
+
+    if let Some(install) = mux_install {
+        parts.push(install);
+    }
+
+    parts.push(tail.to_string());
+    parts.join(" && ")
 }
 
 struct CreateOptions<'a> {
@@ -163,6 +177,7 @@ struct CreateOptions<'a> {
     mounts: &'a [String],
     setup: Option<&'a str>,
     user: Option<&'a str>,
+    multiplexer: Option<&'a MultiplexerKind>,
     limits: &'a ContainerLimits,
     detach: bool,
 }
@@ -191,7 +206,11 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
     cmd.arg(opts.image);
-    cmd.args(["/bin/bash", "-c", &setup_script(opts.setup, opts.detach)]);
+    cmd.args([
+        "/bin/bash",
+        "-c",
+        &setup_script(opts.setup, opts.multiplexer, opts.detach),
+    ]);
 
     let status = cmd.status().context("failed to run docker")?;
     if !status.success() {
