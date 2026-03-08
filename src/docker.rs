@@ -158,7 +158,7 @@ fn setup_script(setup: Option<&str>, mux: Option<&MultiplexerKind>, detach: bool
         let m = kind.get();
         let cmd = m.install_cmd();
         format!(
-            "source ~/.bashrc 2>/dev/null; command -v {} >/dev/null 2>&1 || {{ {cmd}; }}",
+            ". \"$HOME/.cargo/env\" 2>/dev/null; command -v {} >/dev/null 2>&1 || {{ {cmd}; }}",
             m.name()
         )
     });
@@ -276,7 +276,7 @@ fn exec_into(name: &str, session: &str, mux: Option<&MultiplexerKind>) -> Result
         Some(kind) => {
             let m = kind.get();
             let attach = m.attach_cmd(session);
-            let script = format!("source ~/.bashrc 2>/dev/null; {attach}");
+            let script = format!(". \"$HOME/.cargo/env\" 2>/dev/null; {attach}");
             cmd.args(["/bin/bash", "-c", &script]);
         }
         None => {
