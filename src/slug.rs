@@ -16,12 +16,11 @@ pub fn slugify(input: &str) -> String {
 
     let replaced: String = lowered
         .chars()
-        .map(|c| match c {
-            ' ' | '_' => '-',
-            c if c.is_ascii_alphanumeric() || c == '-' => c,
-            _ => '\0',
+        .filter_map(|c| match c {
+            ' ' | '_' => Some('-'),
+            c if c.is_ascii_alphanumeric() || c == '-' => Some(c),
+            _ => None,
         })
-        .filter(|&c| c != '\0')
         .collect();
 
     // Collapse consecutive hyphens
