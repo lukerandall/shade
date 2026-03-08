@@ -147,7 +147,10 @@ fn setup_script(setup: Option<&str>, mux: Option<&MultiplexerKind>, detach: bool
     let mux_install = mux.map(|kind| {
         let m = kind.get();
         let cmd = m.install_cmd();
-        format!("command -v {} >/dev/null 2>&1 || {{ {cmd}; }}", m.name())
+        format!(
+            "source ~/.bashrc 2>/dev/null; command -v {} >/dev/null 2>&1 || {{ {cmd}; }}",
+            m.name()
+        )
     });
 
     let mut parts = Vec::new();
