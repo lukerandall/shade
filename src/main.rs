@@ -117,18 +117,6 @@ enum Command {
     Keychain(KeychainCommand),
 }
 
-fn detect_existing_workspaces(env_path: &std::path::Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(env_path) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter(|e| e.path().join(".jj").is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect()
-}
-
 fn select_and_create_workspaces(
     vcs: &impl Vcs,
     config: &config::Config,
@@ -140,7 +128,7 @@ fn select_and_create_workspaces(
         return Ok(());
     }
 
-    let existing = detect_existing_workspaces(env_path);
+    let existing = env::list_workspace_dirs(env_path);
     let current_repo = std::env::current_dir()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
@@ -166,7 +154,7 @@ fn delete_shade(
     config: &config::Config,
 ) -> Result<()> {
     // Clean up jj workspaces
-    let workspace_names = detect_existing_workspaces(&environment.path);
+    let workspace_names = env::list_workspace_dirs(&environment.path);
     if !workspace_names.is_empty() {
         let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
         for ws_name in &workspace_names {

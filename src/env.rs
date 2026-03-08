@@ -120,6 +120,21 @@ pub fn create_environment(env_dir: &str, label: &str) -> Result<Environment> {
     })
 }
 
+/// List the names of subdirectories inside `dir` that contain a `.jj` directory.
+///
+/// Used to discover which repos have workspaces checked out inside a shade.
+pub fn list_workspace_dirs(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| e.path().join(".jj").is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect()
+}
+
 /// Delete an environment by removing its directory recursively.
 pub fn delete_environment(env: &Environment) -> Result<()> {
     if !env.path.exists() {

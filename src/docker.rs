@@ -38,19 +38,6 @@ fn inspect_container(name: &str) -> Result<ContainerState> {
     }
 }
 
-/// Discover repo directories inside a shade (directories containing .jj).
-fn find_repo_dirs(shade_path: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(shade_path) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter(|e| e.path().join(".jj").is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect()
-}
-
 /// Build volume mount arguments for docker run.
 fn volume_args(shade_path: &Path, repo_names: &[String]) -> Vec<String> {
     let mut args = Vec::new();
@@ -92,7 +79,7 @@ pub fn run_docker(
             }
         }
         ContainerState::NotFound => {
-            let repos = find_repo_dirs(shade_path);
+            let repos = crate::env::list_workspace_dirs(shade_path);
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
             let has_prebuilt = prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux);
