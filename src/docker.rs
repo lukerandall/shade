@@ -96,15 +96,22 @@ pub fn run_docker(
             // Use prebuilt image if available (setup already baked in).
             // Always pass the setup script — it checks a hash marker and
             // only re-runs if the setup command has changed.
-            let effective_image =
-                if prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux) {
-                    let prebuilt = prebuilt_image_name(&docker.image, docker.setup.as_deref(), mux);
-                    println!("Creating container {name} from prebuilt image...");
-                    prebuilt
-                } else {
-                    println!("Creating container {name} from {}...", docker.image);
-                    docker.image.clone()
-                };
+            let has_prebuilt = prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux);
+
+            if !has_prebuilt && (docker.setup.is_some() || mux.is_some()) {
+                bail!(
+                    "no prebuilt image found. Run `shade docker build` first to bake in setup and tools"
+                );
+            }
+
+            let effective_image = if has_prebuilt {
+                let prebuilt = prebuilt_image_name(&docker.image, docker.setup.as_deref(), mux);
+                println!("Creating container {name} from prebuilt image...");
+                prebuilt
+            } else {
+                println!("Creating container {name} from {}...", docker.image);
+                docker.image.clone()
+            };
 
             create_and_run(&CreateOptions {
                 name: &name,
