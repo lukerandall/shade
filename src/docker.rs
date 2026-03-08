@@ -76,26 +76,25 @@ pub fn run_docker(
 
     let mux = docker.multiplexer.as_ref();
 
+    let paths = &docker.path;
+
     match inspect_container(&name)? {
         ContainerState::Running => {
             println!("Attaching to running container {name}...");
-            exec_into(&name, shade_name, mux)?;
+            exec_into(&name, shade_name, mux, paths)?;
         }
         ContainerState::Stopped => {
             println!("Starting stopped container {name}...");
             start_container(&name, mux)?;
             if mux.is_some() {
                 wait_for_ready(&name)?;
-                exec_into(&name, shade_name, mux)?;
+                exec_into(&name, shade_name, mux, paths)?;
             }
         }
         ContainerState::NotFound => {
             let repos = find_repo_dirs(shade_path);
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
-            // Use prebuilt image if available (setup already baked in).
-            // Always pass the setup script — it checks a hash marker and
-            // only re-runs if the setup command has changed.
             let has_prebuilt = prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux);
 
             if !has_prebuilt && (docker.setup.is_some() || mux.is_some()) {
@@ -123,13 +122,14 @@ pub fn run_docker(
                 setup: docker.setup.as_deref(),
                 user: docker.user.as_deref(),
                 multiplexer: mux,
+                paths,
                 limits: &docker.limits,
                 detach: mux.is_some(),
             })?;
 
             if mux.is_some() {
                 wait_for_ready(&name)?;
-                exec_into(&name, shade_name, mux)?;
+                exec_into(&name, shade_name, mux, paths)?;
             }
         }
     }
@@ -147,7 +147,21 @@ fn hash_setup(cmd: &str) -> u64 {
     hasher.finish()
 }
 
-fn setup_script(setup: Option<&str>, mux: Option<&MultiplexerKind>, detach: bool) -> String {
+/// Build a shell snippet that prepends the configured paths to $PATH.
+fn path_export(paths: &[String]) -> Option<String> {
+    if paths.is_empty() {
+        return None;
+    }
+    let joined = paths.join(":");
+    Some(format!("export PATH=\"{joined}:$PATH\""))
+}
+
+fn setup_script(
+    setup: Option<&str>,
+    mux: Option<&MultiplexerKind>,
+    paths: &[String],
+    detach: bool,
+) -> String {
     let tail = if detach {
         "exec sleep infinity"
     } else {
@@ -157,13 +171,14 @@ fn setup_script(setup: Option<&str>, mux: Option<&MultiplexerKind>, detach: bool
     let mux_install = mux.map(|kind| {
         let m = kind.get();
         let cmd = m.install_cmd();
-        format!(
-            ". \"$HOME/.cargo/env\" 2>/dev/null; export PATH=\"$HOME/.local/bin:$PATH\"; command -v {} >/dev/null 2>&1 || {{ {cmd}; }}",
-            m.name()
-        )
+        format!("command -v {} >/dev/null 2>&1 || {{ {cmd}; }}", m.name())
     });
 
     let mut parts = Vec::new();
+
+    if let Some(export) = path_export(paths) {
+        parts.push(export);
+    }
 
     if let Some(cmd) = setup {
         let cmd = cmd.trim();
@@ -195,6 +210,7 @@ struct CreateOptions<'a> {
     setup: Option<&'a str>,
     user: Option<&'a str>,
     multiplexer: Option<&'a MultiplexerKind>,
+    paths: &'a [String],
     limits: &'a ContainerLimits,
     detach: bool,
 }
@@ -226,7 +242,7 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     cmd.args([
         "/bin/bash",
         "-c",
-        &setup_script(opts.setup, opts.multiplexer, opts.detach),
+        &setup_script(opts.setup, opts.multiplexer, opts.paths, opts.detach),
     ]);
 
     let status = cmd.status().context("failed to run docker")?;
@@ -269,16 +285,24 @@ fn start_container(name: &str, mux: Option<&MultiplexerKind>) -> Result<()> {
     Ok(())
 }
 
-fn exec_into(name: &str, session: &str, mux: Option<&MultiplexerKind>) -> Result<()> {
+fn exec_into(
+    name: &str,
+    session: &str,
+    mux: Option<&MultiplexerKind>,
+    paths: &[String],
+) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(["exec", "-it", name]);
     match mux {
         Some(kind) => {
             let m = kind.get();
             let attach = m.attach_cmd(session);
-            let script = format!(
-                ". \"$HOME/.cargo/env\" 2>/dev/null; export PATH=\"$HOME/.local/bin:$PATH\"; {attach}"
-            );
+            let mut script_parts = Vec::new();
+            if let Some(export) = path_export(paths) {
+                script_parts.push(export);
+            }
+            script_parts.push(attach);
+            let script = script_parts.join("; ");
             cmd.args(["/bin/bash", "-c", &script]);
         }
         None => {

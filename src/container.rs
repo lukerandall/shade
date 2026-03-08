@@ -39,6 +39,8 @@ pub struct DockerConfig {
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
     #[serde(default)]
+    pub path: Vec<String>,
+    #[serde(default)]
     pub mounts: Vec<String>,
     #[serde(default)]
     pub limits: ContainerLimits,
@@ -51,6 +53,7 @@ impl Default for DockerConfig {
             setup: None,
             user: None,
             multiplexer: None,
+            path: Vec::new(),
             mounts: Vec::new(),
             limits: ContainerLimits::default(),
         }
@@ -64,6 +67,7 @@ pub struct DockerConfigOverride {
     pub setup: Option<String>,
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
+    pub path: Option<Vec<String>>,
     pub mounts: Option<Vec<String>>,
     #[serde(default)]
     pub limits: ContainerLimitsOverride,
@@ -82,6 +86,7 @@ impl DockerConfig {
                 .multiplexer
                 .clone()
                 .or_else(|| self.multiplexer.clone()),
+            path: overrides.path.clone().unwrap_or_else(|| self.path.clone()),
             mounts: overrides
                 .mounts
                 .clone()
