@@ -67,6 +67,8 @@ enum DockerCommand {
     Build,
     /// Remove the Docker container for the current shade
     Rm,
+    /// Remove prebuilt Docker images
+    Clean,
 }
 
 #[derive(clap::Subcommand)]
@@ -95,6 +97,8 @@ enum Command {
         /// Name of the shade to delete (e.g. 2026-03-07-my-feature)
         name: String,
     },
+    /// Start or attach to the Docker container for the current shade
+    Run,
     /// Manage Docker containers for shade environments
     #[command(subcommand)]
     Docker(DockerCommand),
@@ -345,7 +349,7 @@ fn main() -> Result<()> {
             println!("Deleted {name}");
             Ok(())
         }
-        Command::Docker(DockerCommand::Run) => run_docker_for_current_shade(&config),
+        Command::Run | Command::Docker(DockerCommand::Run) => run_docker_for_current_shade(&config),
         Command::Docker(DockerCommand::Build) => {
             let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
             docker::build_image(
@@ -355,6 +359,10 @@ fn main() -> Result<()> {
                 &resolved,
                 &config.docker.limits,
             )?;
+            Ok(())
+        }
+        Command::Docker(DockerCommand::Clean) => {
+            docker::clean_images()?;
             Ok(())
         }
         Command::Docker(DockerCommand::Rm) => {

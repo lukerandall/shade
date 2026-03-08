@@ -428,6 +428,42 @@ fn prebuilt_image_name(
     format!("shade-prebuilt:{hash:x}")
 }
 
+/// Remove all prebuilt shade images.
+pub fn clean_images() -> Result<()> {
+    let output = Command::new("docker")
+        .args([
+            "images",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+            "shade-prebuilt",
+        ])
+        .output()
+        .context("failed to list docker images")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let images: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+
+    if images.is_empty() {
+        println!("No prebuilt images found");
+        return Ok(());
+    }
+
+    for image in &images {
+        let rm = Command::new("docker")
+            .args(["rmi", image])
+            .output()
+            .context("failed to remove image")?;
+        if rm.status.success() {
+            println!("Removed {image}");
+        } else {
+            let stderr = String::from_utf8_lossy(&rm.stderr);
+            eprintln!("Failed to remove {image}: {}", stderr.trim());
+        }
+    }
+
+    Ok(())
+}
+
 /// Remove a container if it exists (stopped or running). Silently succeeds if not found.
 pub fn remove_container(shade_name: &str) -> Result<()> {
     let name = container_name(shade_name);
