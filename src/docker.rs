@@ -157,8 +157,15 @@ fn path_export(paths: &[String]) -> Option<String> {
     if paths.is_empty() {
         return None;
     }
-    let joined = paths.join(":");
-    Some(format!("export PATH=\"{joined}:$PATH\""))
+    // Quote each path individually so spaces and special characters don't
+    // break the shell snippet. Single-quote the components and escape any
+    // embedded single quotes via the '\'' idiom.
+    let quoted: Vec<String> = paths
+        .iter()
+        .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+        .collect();
+    let joined = quoted.join(":");
+    Some(format!("export PATH={joined}:$PATH"))
 }
 
 fn setup_script(
