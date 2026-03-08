@@ -104,10 +104,10 @@ enum Command {
     Docker(DockerCommand),
 
     // -- Setup commands --
-    /// Output shell integration for your shell (fish, bash, zsh)
+    /// Output shell integration for your shell
     Init {
         /// Shell to generate integration for
-        shell: String,
+        shell: shell_init::ShellKind,
     },
     /// Manage the shade configuration file
     #[command(subcommand)]
@@ -158,8 +158,14 @@ fn delete_shade(
     if !workspace_names.is_empty() {
         let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
         for ws_name in &workspace_names {
-            if let Some(repo) = repos.iter().find(|r| &r.name == ws_name) {
-                let _ = vcs.remove_workspace(repo, &environment.label);
+            if let Some(repo) = repos.iter().find(|r| &r.name == ws_name)
+                && let Err(e) = vcs.remove_workspace(repo, &environment.label)
+            {
+                eprintln!(
+                    "warning: failed to remove jj workspace for {ws_name}: {e}\n\
+                     You may need to run `jj workspace forget {}` manually.",
+                    environment.label
+                );
             }
         }
     }
@@ -231,14 +237,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init { ref shell } => {
-            print!("{}", shell_init::shell_init(shell)?);
-            return Ok(());
+        Command::Init { shell } => {
+            print!("{}", shell_init::shell_init(shell));
         }
         Command::Config(ConfigCommand::New) => {
             let path = generate_config()?;
             println!("Created config file: {}", path.display());
-            return Ok(());
         }
         Command::Config(ConfigCommand::Edit) => {
             let path = config::Config::default_path();
@@ -250,15 +254,9 @@ fn main() -> Result<()> {
             if !status.success() {
                 anyhow::bail!("editor exited with {status}");
             }
-            return Ok(());
         }
-        _ => {}
-    }
-
-    let config = config::Config::load()?;
-
-    match cli.command {
         Command::Keychain(ref cmd) => {
+            let config = config::Config::load()?;
             let store = keychain::default_store();
             let prefix = &config.keychain_prefix;
             match cmd {
@@ -297,9 +295,9 @@ fn main() -> Result<()> {
                     println!("Deleted {service}");
                 }
             }
-            Ok(())
         }
         Command::List => {
+            let config = config::Config::load()?;
             let environments = env::list_environments(&config.env_dir)?;
             if environments.is_empty() {
                 println!("No shade environments found in {}", config.env_dir);
@@ -308,31 +306,33 @@ fn main() -> Result<()> {
                     println!("{}", environment.name);
                 }
             }
-            Ok(())
         }
         Command::Cd { ref name } => {
+            let config = config::Config::load()?;
             let environments = env::list_environments(&config.env_dir)?;
             let environment = environments
                 .iter()
                 .find(|e| e.name == *name)
                 .with_context(|| format!("shade not found: {name}"))?;
             println!("{}", environment.path.display());
-            Ok(())
         }
         Command::Delete { ref name } => {
+            let config = config::Config::load()?;
             let environments = env::list_environments(&config.env_dir)?;
             let environment = environments
                 .iter()
                 .find(|e| e.name == *name)
                 .with_context(|| format!("shade not found: {name}"))?;
-
             let vcs = JjVcs;
             delete_shade(environment, &vcs, &config)?;
             println!("Deleted {name}");
-            Ok(())
         }
-        Command::Run | Command::Docker(DockerCommand::Run) => run_docker_for_current_shade(&config),
+        Command::Run | Command::Docker(DockerCommand::Run) => {
+            let config = config::Config::load()?;
+            run_docker_for_current_shade(&config)?;
+        }
         Command::Docker(DockerCommand::Build) => {
+            let config = config::Config::load()?;
             let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
             docker::build_image(
                 &config.docker.image,
@@ -341,24 +341,22 @@ fn main() -> Result<()> {
                 &resolved,
                 &config.docker.limits,
             )?;
-            Ok(())
         }
         Command::Docker(DockerCommand::Clean) => {
             docker::clean_images()?;
-            Ok(())
         }
         Command::Docker(DockerCommand::Rm) => {
+            let config = config::Config::load()?;
             let shade_path = current_shade_path(&config.env_dir)?;
             let shade_name = shade_path
                 .file_name()
                 .context("invalid shade path")?
                 .to_string_lossy();
-
             docker::remove_container(&shade_name)?;
             println!("Removed container for {shade_name}");
-            Ok(())
         }
         Command::New { skip_repos, repos } => {
+            let config = config::Config::load()?;
             let vcs = JjVcs;
             let delete_handler = |environment: &env::Environment| -> Result<()> {
                 delete_shade(environment, &vcs, &config)
@@ -392,8 +390,8 @@ fn main() -> Result<()> {
                 }
                 tui::TuiResult::Cancelled => {}
             }
-            Ok(())
         }
-        Command::Init { .. } | Command::Config(_) => unreachable!(),
     }
+
+    Ok(())
 }

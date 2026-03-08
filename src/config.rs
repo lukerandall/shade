@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -118,32 +118,54 @@ impl Config {
 
     /// Generate a default config file as a TOML string with human-friendly paths.
     pub fn generate_default() -> String {
-        #[derive(Serialize)]
-        struct FileConfig {
-            env_dir: String,
-            code_dirs: Vec<String>,
-            keychain_prefix: String,
-            docker: FileDockerConfig,
-        }
+        format!(
+            r#"# Directory where shade environments are created.
+env_dir = "{env_dir}"
 
-        #[derive(Serialize)]
-        struct FileDockerConfig {
-            image: String,
-        }
+# Directories scanned for jj repositories when creating a shade.
+code_dirs = ["{code_dir}"]
 
-        let config = FileConfig {
-            env_dir: Self::DEFAULT_ENV_DIR.to_string(),
-            code_dirs: Self::DEFAULT_CODE_DIRS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            keychain_prefix: Self::default_keychain_prefix(),
-            docker: FileDockerConfig {
-                image: "ubuntu:latest".to_string(),
-            },
-        };
+# Prefix applied to keychain service names (e.g. "shade.my-token").
+keychain_prefix = "{keychain_prefix}"
 
-        toml::to_string_pretty(&config).expect("failed to serialize default config")
+# Environment variables injected into every shade container.
+# [env]
+# STATIC_VAR = "value"
+# FROM_KEYCHAIN = {{ keychain = "service-name" }}
+# FROM_COMMAND  = {{ command = "cat ~/.secrets/token" }}
+
+[docker]
+# Base Docker image.
+image = "ubuntu:latest"
+
+# Shell command to run inside the container once on first start.
+# The command is re-run if it changes (content-hashed).
+# setup = "apt-get update && apt-get install -y ripgrep"
+
+# Run the container as this user.
+# user = "dev"
+
+# Terminal multiplexer to install and use ("zellij" or "tmux").
+# multiplexer = "zellij"
+
+# Extra directories to prepend to PATH inside the container.
+# path = ["/home/dev/.cargo/bin"]
+
+# Additional host paths to mount into the container.
+# mounts = ["/host/path:/container/path", "~/.ssh"]
+
+# [docker.limits]
+# memory    = "4g"
+# cpus      = "2"
+# pids_limit = "256"
+# cap_drop  = ["ALL"]
+# cap_add   = ["SETUID", "SETGID"]
+# no_new_privileges = true
+"#,
+            env_dir = Self::DEFAULT_ENV_DIR,
+            code_dir = Self::DEFAULT_CODE_DIRS[0],
+            keychain_prefix = Self::default_keychain_prefix(),
+        )
     }
 
     /// Return the default config file path.

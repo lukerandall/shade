@@ -1,46 +1,35 @@
-use anyhow::Result;
-use clap::CommandFactory;
+use clap::ValueEnum;
 
 use crate::Cli;
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ShellKind {
+    Fish,
+    Bash,
+    Zsh,
+}
+
 fn generate_completions(shell: clap_complete::Shell) -> String {
+    use clap::CommandFactory;
     let mut cmd = Cli::command();
     let mut buf = Vec::new();
     clap_complete::generate(shell, &mut cmd, "shade", &mut buf);
     String::from_utf8(buf).expect("completions should be valid utf-8")
 }
 
-pub fn shell_init(shell: &str) -> Result<String> {
-    let mut output = String::new();
-
-    let completions_shell = match shell {
-        "fish" => {
-            output.push_str(FISH_FUNCTION);
-            clap_complete::Shell::Fish
-        }
-        "bash" => {
-            output.push_str(BASH_FUNCTION);
-            clap_complete::Shell::Bash
-        }
-        "zsh" => {
-            output.push_str(ZSH_FUNCTION);
-            clap_complete::Shell::Zsh
-        }
-        _ => anyhow::bail!("unsupported shell: {}. Use fish, bash, or zsh", shell),
+pub fn shell_init(shell: ShellKind) -> String {
+    let (function, completions_shell, custom_completions) = match shell {
+        ShellKind::Fish => (FISH_FUNCTION, clap_complete::Shell::Fish, FISH_COMPLETIONS),
+        ShellKind::Bash => (BASH_FUNCTION, clap_complete::Shell::Bash, BASH_COMPLETIONS),
+        ShellKind::Zsh => (ZSH_FUNCTION, clap_complete::Shell::Zsh, ZSH_COMPLETIONS),
     };
 
+    let mut output = String::from(function);
     output.push('\n');
     output.push_str(&generate_completions(completions_shell));
     output.push('\n');
-
-    match shell {
-        "fish" => output.push_str(FISH_COMPLETIONS),
-        "bash" => output.push_str(BASH_COMPLETIONS),
-        "zsh" => output.push_str(ZSH_COMPLETIONS),
-        _ => {}
-    }
-
-    Ok(output)
+    output.push_str(custom_completions);
+    output
 }
 
 const FISH_FUNCTION: &str = r#"function s --description "Open a shade environment"
