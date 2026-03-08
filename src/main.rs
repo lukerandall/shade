@@ -278,14 +278,8 @@ fn main() -> Result<()> {
                     let service = format!("{prefix}{name}");
                     let secret = match value {
                         Some(v) => v.clone(),
-                        None => {
-                            eprint!("Enter value for {name}: ");
-                            let mut buf = String::new();
-                            std::io::stdin()
-                                .read_line(&mut buf)
-                                .context("failed to read from stdin")?;
-                            buf.trim().to_string()
-                        }
+                        None => rpassword::prompt_password(format!("Enter value for {name}: "))
+                            .context("failed to read secret")?,
                     };
                     store.set(&service, &secret)?;
                     println!("Stored {service}");
