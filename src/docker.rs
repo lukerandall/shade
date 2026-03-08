@@ -140,11 +140,16 @@ pub fn run_docker(
 const SETUP_MARKER: &str = "/root/.shade-setup-hash";
 const READY_MARKER: &str = "/root/.shade-ready";
 
+/// FNV-1a hash — stable across Rust versions and processes, no extra deps.
 fn hash_setup(cmd: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    cmd.hash(&mut hasher);
-    hasher.finish()
+    const FNV_OFFSET: u64 = 14695981039346656037;
+    const FNV_PRIME: u64 = 1099511628211;
+    let mut hash = FNV_OFFSET;
+    for byte in cmd.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 /// Build a shell snippet that prepends the configured paths to $PATH.
