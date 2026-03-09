@@ -22,11 +22,31 @@ impl Vcs for JjVcs {
                     continue;
                 }
                 let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
                 if path.join(".jj").is_dir() {
-                    repos.push(Repo {
-                        name: entry.file_name().to_string_lossy().to_string(),
-                        path,
-                    });
+                    repos.push(Repo { name, path });
+                } else {
+                    // Scan one level deeper for grouped repos (e.g. acme/core)
+                    let Ok(sub_entries) = std::fs::read_dir(&path) else {
+                        continue;
+                    };
+                    for sub_entry in sub_entries {
+                        let Ok(sub_entry) = sub_entry else {
+                            continue;
+                        };
+                        if !sub_entry.file_type().is_ok_and(|t| t.is_dir()) {
+                            continue;
+                        }
+                        let sub_path = sub_entry.path();
+                        if sub_path.join(".jj").is_dir() {
+                            let sub_name =
+                                format!("{}/{}", name, sub_entry.file_name().to_string_lossy());
+                            repos.push(Repo {
+                                name: sub_name,
+                                path: sub_path,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -36,6 +56,10 @@ impl Vcs for JjVcs {
 
     fn create_workspace(&self, repo: &Repo, target: &Path, workspace_name: &str) -> Result<()> {
         let target_path = target.join(&repo.name);
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+        }
         let output = Command::new("jj")
             .args([
                 "workspace",
@@ -103,6 +127,29 @@ mod tests {
         assert_eq!(repos.len(), 2);
         assert_eq!(repos[0].name, "repo-a");
         assert_eq!(repos[1].name, "repo-b");
+    }
+
+    #[test]
+    fn test_discover_repos_finds_nested_repos() {
+        let tmp = TempDir::new().unwrap();
+        let code_dir = tmp.path();
+
+        // Top-level repo
+        std::fs::create_dir_all(code_dir.join("standalone/.jj")).unwrap();
+        // Grouped repos under a subdirectory
+        std::fs::create_dir_all(code_dir.join("acme/core/.jj")).unwrap();
+        std::fs::create_dir_all(code_dir.join("acme/dashboard/.jj")).unwrap();
+        // Non-repo subdirectory inside a group
+        std::fs::create_dir_all(code_dir.join("acme/docs")).unwrap();
+
+        let vcs = JjVcs;
+        let dirs = vec![code_dir.to_string_lossy().to_string()];
+        let repos = vcs.discover_repos(&dirs).unwrap();
+
+        assert_eq!(repos.len(), 3);
+        assert_eq!(repos[0].name, "acme/core");
+        assert_eq!(repos[1].name, "acme/dashboard");
+        assert_eq!(repos[2].name, "standalone");
     }
 
     #[test]
