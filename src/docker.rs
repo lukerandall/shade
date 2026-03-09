@@ -145,11 +145,19 @@ fn path_export(paths: &[String]) -> Option<String> {
         return None;
     }
     // Quote each path individually so spaces and special characters don't
-    // break the shell snippet. Single-quote the components and escape any
-    // embedded single quotes via the '\'' idiom.
+    // break the shell snippet. Use double quotes to allow variable expansion
+    // (e.g., $HOME). Escape backslashes, double quotes, and backticks that
+    // would break the double-quote context. Dollar signs are NOT escaped to
+    // allow shell variable expansion.
     let quoted: Vec<String> = paths
         .iter()
-        .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+        .map(|p| {
+            let escaped = p
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('`', "\\`");
+            format!("\"{}\"", escaped)
+        })
         .collect();
     let joined = quoted.join(":");
     Some(format!("export PATH={joined}:$PATH"))
@@ -479,5 +487,57 @@ pub fn remove_container(shade_name: &str) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_export_allows_variable_expansion() {
+        let paths = vec![
+            "$HOME/.cargo/bin".to_string(),
+            "$HOME/.local/bin".to_string(),
+        ];
+        let export = path_export(&paths).unwrap();
+        // Variables should not be escaped
+        assert!(export.contains("$HOME"));
+        // Should use double quotes to allow expansion
+        assert!(export.contains(r#""$HOME/.cargo/bin""#));
+    }
+
+    #[test]
+    fn test_path_export_escapes_special_chars() {
+        let paths = vec![
+            r#"/path/with"quotes"#.to_string(),
+            r"/path/with\backslash".to_string(),
+        ];
+        let export = path_export(&paths).unwrap();
+        // Double quotes should be escaped
+        assert!(export.contains(r#"with\"quotes"#));
+        // Backslashes should be escaped
+        assert!(export.contains(r"with\\backslash"));
+    }
+
+    #[test]
+    fn test_path_export_handles_backticks() {
+        let paths = vec!["/path/with`backtick`".to_string()];
+        let export = path_export(&paths).unwrap();
+        // Backticks should be escaped to prevent command substitution
+        assert!(export.contains(r"with\`backtick\`"));
+    }
+
+    #[test]
+    fn test_path_export_empty_returns_none() {
+        let paths = vec![];
+        assert!(path_export(&paths).is_none());
+    }
+
+    #[test]
+    fn test_path_export_format() {
+        let paths = vec!["/usr/local/bin".to_string(), "/opt/bin".to_string()];
+        let export = path_export(&paths).unwrap();
+        assert_eq!(export, r#"export PATH="/usr/local/bin":"/opt/bin":$PATH"#);
     }
 }
