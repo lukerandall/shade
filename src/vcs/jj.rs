@@ -83,6 +83,29 @@ impl Vcs for JjVcs {
         Ok(())
     }
 
+    fn clone_repo(&self, repo: &Repo, target: &Path) -> Result<()> {
+        let target_path = target.join(&repo.name);
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+        }
+        let output = Command::new("jj")
+            .args([
+                "git",
+                "clone",
+                &repo.path.to_string_lossy(),
+                &target_path.to_string_lossy(),
+            ])
+            .output()
+            .context("failed to run jj git clone")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("jj git clone failed for {}: {}", repo.name, stderr.trim());
+        }
+        Ok(())
+    }
+
     fn remove_workspace(&self, repo: &Repo, workspace_name: &str) -> Result<()> {
         let output = Command::new("jj")
             .args(["workspace", "forget", workspace_name])
@@ -158,6 +181,38 @@ mod tests {
         let dirs = vec!["/tmp/shade-nonexistent-abc123".to_string()];
         let repos = vcs.discover_repos(&dirs).unwrap();
         assert!(repos.is_empty());
+    }
+
+    #[test]
+    fn test_clone_repo_creates_independent_copy() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        let target_dir = tmp.path().join("target");
+
+        // Create a real jj repo as the source
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let init = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(&source_dir)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "jj git init failed");
+
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source_dir,
+        };
+
+        let vcs = JjVcs;
+        vcs.clone_repo(&repo, &target_dir).unwrap();
+
+        let cloned = target_dir.join("my-repo");
+        assert!(cloned.exists(), "clone directory should exist");
+        // A clone's .jj/repo is a directory, not a file
+        assert!(
+            cloned.join(".jj/repo").is_dir(),
+            ".jj/repo should be a directory (independent clone)"
+        );
     }
 
     #[test]

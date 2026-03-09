@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
@@ -38,15 +38,80 @@ fn inspect_container(name: &str) -> Result<ContainerState> {
     }
 }
 
-/// Build volume mount arguments for docker run.
-fn volume_args(shade_path: &Path, repo_names: &[String]) -> Vec<String> {
-    let mut args = Vec::new();
-    for name in repo_names {
-        let host_path = shade_path.join(name);
-        args.push("-v".to_string());
-        args.push(format!("{}:/workspace/{}", host_path.display(), name));
+/// Info about a repo inside a shade, used for building Docker mounts.
+struct RepoMount {
+    /// Repo name (e.g. "core" or "acme/core").
+    name: String,
+    /// Whether this is a jj workspace (true) or an independent clone (false).
+    is_workspace: bool,
+}
+
+/// Resolve the primary repo root for a jj workspace.
+///
+/// A workspace's `.jj/repo` is a file containing a relative path to the
+/// primary's `.jj/repo` directory. We canonicalize that and go up two levels
+/// to get the repo root.
+fn resolve_primary_repo(workspace_path: &Path) -> Option<std::path::PathBuf> {
+    let repo_file = workspace_path.join(".jj/repo");
+    if !repo_file.is_file() {
+        return None;
     }
-    args
+    let rel = std::fs::read_to_string(&repo_file).ok()?;
+    let jj_dir = workspace_path.join(".jj");
+    let primary_repo = jj_dir.join(rel.trim()).canonicalize().ok()?;
+    // primary_repo is the .jj/repo dir; go up twice to get the repo root
+    primary_repo.parent()?.parent().map(|p| p.to_path_buf())
+}
+
+/// Build volume mount arguments and an optional workspace symlink command for docker run.
+///
+/// Clone repos are mounted at `/workspace/<name>` as before.
+/// Workspace repos are mounted at their host absolute paths so that the relative
+/// path in `.jj/repo` resolves correctly inside the container. A symlink from
+/// `/workspace` to the shade's host path connects everything up.
+fn volume_args(shade_path: &Path, repos: &[RepoMount]) -> (Vec<String>, Option<String>) {
+    let mut args = Vec::new();
+    let has_workspace = repos.iter().any(|r| r.is_workspace);
+
+    if has_workspace {
+        // Mount the shade dir at its host absolute path
+        let shade_abs = shade_path.to_string_lossy();
+        args.push("-v".to_string());
+        args.push(format!("{shade_abs}:{shade_abs}"));
+
+        // Mount each workspace's primary repo at its host absolute path
+        let mut mounted_primaries = HashSet::new();
+        for repo in repos.iter().filter(|r| r.is_workspace) {
+            let ws_path = shade_path.join(&repo.name);
+            if let Some(primary) = resolve_primary_repo(&ws_path) {
+                let primary_str = primary.to_string_lossy().to_string();
+                if mounted_primaries.insert(primary_str.clone()) {
+                    args.push("-v".to_string());
+                    args.push(format!("{primary_str}:{primary_str}"));
+                }
+            }
+        }
+    }
+
+    // Clone repos get the simple /workspace/<name> mount
+    for repo in repos.iter().filter(|r| !r.is_workspace) {
+        let host_path = shade_path.join(&repo.name);
+        args.push("-v".to_string());
+        args.push(format!("{}:/workspace/{}", host_path.display(), repo.name));
+    }
+
+    // If we have workspace repos, symlink /workspace -> shade host path so
+    // the working directory resolves correctly
+    let symlink_cmd = if has_workspace {
+        Some(format!(
+            "ln -sfn {} /workspace",
+            shade_path.to_string_lossy()
+        ))
+    } else {
+        None
+    };
+
+    (args, symlink_cmd)
 }
 
 pub fn run_docker(
@@ -79,7 +144,14 @@ pub fn run_docker(
             }
         }
         ContainerState::NotFound => {
-            let repos = crate::env::list_workspace_dirs(shade_path);
+            let repo_names = crate::env::list_workspace_dirs(shade_path);
+            let repos: Vec<RepoMount> = repo_names
+                .into_iter()
+                .map(|name| {
+                    let is_workspace = crate::env::is_jj_workspace(&shade_path.join(&name));
+                    RepoMount { name, is_workspace }
+                })
+                .collect();
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
             let has_prebuilt = prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux);
@@ -168,6 +240,7 @@ fn setup_script(
     mux: Option<&MultiplexerKind>,
     paths: &[String],
     detach: bool,
+    symlink_cmd: Option<&str>,
 ) -> String {
     let tail = if detach {
         "exec sleep infinity"
@@ -182,6 +255,10 @@ fn setup_script(
     });
 
     let mut parts = Vec::new();
+
+    if let Some(sl) = symlink_cmd {
+        parts.push(sl.to_string());
+    }
 
     if let Some(export) = path_export(paths) {
         parts.push(export);
@@ -210,7 +287,7 @@ fn setup_script(
 struct CreateOptions<'a> {
     name: &'a str,
     shade_path: &'a Path,
-    repos: &'a [String],
+    repos: &'a [RepoMount],
     image: &'a str,
     env: &'a [(String, String)],
     mounts: &'a [String],
@@ -233,7 +310,8 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
         cmd.args(["-u", user]);
     }
     cmd.args(opts.limits.docker_args());
-    cmd.args(volume_args(opts.shade_path, opts.repos));
+    let (vol_args, symlink_cmd) = volume_args(opts.shade_path, opts.repos);
+    cmd.args(vol_args);
     for mount in opts.mounts {
         let mount_arg = if mount.contains(':') {
             mount.to_string()
@@ -246,11 +324,14 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
     cmd.arg(opts.image);
-    cmd.args([
-        "/bin/bash",
-        "-c",
-        &setup_script(opts.setup, opts.multiplexer, opts.paths, opts.detach),
-    ]);
+    let script = setup_script(
+        opts.setup,
+        opts.multiplexer,
+        opts.paths,
+        opts.detach,
+        symlink_cmd.as_deref(),
+    );
+    cmd.args(["/bin/bash", "-c", &script]);
 
     let status = cmd.status().context("failed to run docker")?;
     if !status.success() {
@@ -539,5 +620,79 @@ mod tests {
         let paths = vec!["/usr/local/bin".to_string(), "/opt/bin".to_string()];
         let export = path_export(&paths).unwrap();
         assert_eq!(export, r#"export PATH="/usr/local/bin":"/opt/bin":$PATH"#);
+    }
+
+    #[test]
+    fn test_volume_args_clone_repos_mounted_at_workspace() {
+        let shade = Path::new("/home/user/Shades/2026-03-09-test");
+        let repos = vec![
+            RepoMount {
+                name: "core".to_string(),
+                is_workspace: false,
+            },
+            RepoMount {
+                name: "acme/dashboard".to_string(),
+                is_workspace: false,
+            },
+        ];
+
+        let (args, symlink) = volume_args(shade, &repos);
+
+        // Clone repos should be mounted at /workspace/<name>
+        assert!(args.contains(&format!("{}/core:/workspace/core", shade.display())));
+        assert!(args.contains(&format!(
+            "{}/acme/dashboard:/workspace/acme/dashboard",
+            shade.display()
+        )));
+        // No symlink needed for clone-only
+        assert!(symlink.is_none());
+    }
+
+    #[test]
+    fn test_volume_args_workspace_repos_mounted_at_host_path() {
+        let shade = Path::new("/home/user/Shades/2026-03-09-test");
+        let repos = vec![RepoMount {
+            name: "core".to_string(),
+            is_workspace: true,
+        }];
+
+        let (args, symlink) = volume_args(shade, &repos);
+
+        // Shade dir should be mounted at its host path
+        assert!(args.contains(&format!("{}:{}", shade.display(), shade.display())));
+        // Symlink should point /workspace to the shade host path
+        assert!(symlink.is_some());
+        assert!(
+            symlink
+                .unwrap()
+                .contains(&shade.to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn test_volume_args_mixed_repos() {
+        let shade = Path::new("/home/user/Shades/2026-03-09-test");
+        let repos = vec![
+            RepoMount {
+                name: "ws-repo".to_string(),
+                is_workspace: true,
+            },
+            RepoMount {
+                name: "clone-repo".to_string(),
+                is_workspace: false,
+            },
+        ];
+
+        let (args, symlink) = volume_args(shade, &repos);
+
+        // Shade dir mounted for workspace repos
+        assert!(args.contains(&format!("{}:{}", shade.display(), shade.display())));
+        // Clone repo gets /workspace/ mount
+        assert!(args.contains(&format!(
+            "{}/clone-repo:/workspace/clone-repo",
+            shade.display()
+        )));
+        // Symlink is needed because of workspace repo
+        assert!(symlink.is_some());
     }
 }

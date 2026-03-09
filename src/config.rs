@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::container::DockerConfig;
 use crate::env_vars::EnvValue;
+use crate::vcs::LinkMode;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -15,6 +16,11 @@ pub enum ConfigError {
 
     #[error("failed to read config file: {0}")]
     Read(#[from] std::io::Error),
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct JjConfig {
+    pub link_mode: Option<LinkMode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +32,8 @@ struct RawConfig {
     env: HashMap<String, EnvValue>,
     #[serde(default)]
     docker: DockerConfig,
+    #[serde(default)]
+    jj: JjConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +43,7 @@ pub struct Config {
     pub keychain_prefix: String,
     pub env: HashMap<String, EnvValue>,
     pub docker: DockerConfig,
+    pub link_mode: LinkMode,
 }
 
 impl Config {
@@ -90,12 +99,15 @@ impl Config {
             ..raw.docker
         };
 
+        let link_mode = raw.jj.link_mode.unwrap_or_default();
+
         Ok(Config {
             env_dir,
             code_dirs,
             keychain_prefix,
             env: raw.env,
             docker,
+            link_mode,
         })
     }
 
@@ -106,6 +118,7 @@ impl Config {
             keychain_prefix: Self::default_keychain_prefix(),
             env: HashMap::new(),
             docker: DockerConfig::default(),
+            link_mode: LinkMode::default(),
         }
     }
 
@@ -161,6 +174,11 @@ image = "ubuntu:latest"
 # cap_drop  = ["ALL"]
 # cap_add   = ["SETUID", "SETGID"]
 # no_new_privileges = true
+
+[jj]
+# How repos are linked into shades: "workspace" (shared history, lightweight)
+# or "clone" (independent copy, safer for untrusted agents).
+# link_mode = "workspace"
 "#,
             env_dir = Self::DEFAULT_ENV_DIR,
             code_dir = Self::DEFAULT_CODE_DIRS[0],
@@ -278,6 +296,28 @@ mod tests {
             config.code_dirs,
             vec![home.join("Code").to_string_lossy().to_string()]
         );
+    }
+
+    #[test]
+    fn test_link_mode_defaults_to_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        fs::write(&config_path, "").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert_eq!(config.link_mode, LinkMode::Workspace);
+    }
+
+    #[test]
+    fn test_link_mode_clone() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        fs::write(&config_path, "[jj]\nlink_mode = \"clone\"\n").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert_eq!(config.link_mode, LinkMode::Clone);
     }
 
     #[test]

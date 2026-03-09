@@ -159,6 +159,14 @@ pub fn list_workspace_dirs(dir: &std::path::Path) -> Vec<String> {
     result
 }
 
+/// Check whether a repo directory is a jj workspace (vs an independent clone).
+///
+/// A workspace's `.jj/repo` is a **file** containing a relative path to the
+/// primary repo's store. A clone's `.jj/repo` is a **directory** (local store).
+pub fn is_jj_workspace(path: &std::path::Path) -> bool {
+    path.join(".jj/repo").is_file()
+}
+
 /// Delete an environment by removing its directory recursively.
 pub fn delete_environment(env: &Environment) -> Result<()> {
     if !env.path.exists() {
@@ -337,6 +345,31 @@ mod tests {
         assert_eq!(dirs[0], "acme/core");
         assert_eq!(dirs[1], "acme/dashboard");
         assert_eq!(dirs[2], "standalone");
+    }
+
+    #[test]
+    fn test_is_jj_workspace_true_when_repo_is_file() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(repo.join(".jj")).unwrap();
+        // Workspace: .jj/repo is a file
+        fs::write(repo.join(".jj/repo"), "../../primary/.jj/repo").unwrap();
+        assert!(is_jj_workspace(&repo));
+    }
+
+    #[test]
+    fn test_is_jj_workspace_false_when_repo_is_dir() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        // Clone: .jj/repo is a directory
+        fs::create_dir_all(repo.join(".jj/repo")).unwrap();
+        assert!(!is_jj_workspace(&repo));
+    }
+
+    #[test]
+    fn test_is_jj_workspace_false_when_no_jj() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!is_jj_workspace(tmp.path()));
     }
 
     #[test]

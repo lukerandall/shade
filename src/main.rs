@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use keychain::SecretStore;
+use vcs::LinkMode;
 use vcs::Vcs;
 use vcs::jj::JjVcs;
 
@@ -84,6 +85,10 @@ enum Command {
         /// Prompt for repo selection even when selecting an existing shade
         #[arg(short = 'r', long = "repos")]
         repos: bool,
+
+        /// Clone repos instead of creating jj workspaces (independent copies)
+        #[arg(short = 'c', long = "clone")]
+        clone: bool,
     },
     /// List existing shade environments
     List,
@@ -117,11 +122,12 @@ enum Command {
     Keychain(KeychainCommand),
 }
 
-fn select_and_create_workspaces(
+fn select_and_link_repos(
     vcs: &impl Vcs,
     config: &config::Config,
     env_path: &std::path::Path,
     workspace_name: &str,
+    link_mode: LinkMode,
 ) -> Result<()> {
     let repos = vcs.discover_repos(&config.code_dirs)?;
     if repos.is_empty() {
@@ -135,9 +141,17 @@ fn select_and_create_workspaces(
 
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
+            let verb = match link_mode {
+                LinkMode::Workspace => "Creating workspace",
+                LinkMode::Clone => "Cloning",
+            };
             for repo in &selected {
-                print!("Creating workspace for {}... ", repo.name);
-                match vcs.create_workspace(repo, env_path, workspace_name) {
+                print!("{verb} for {}... ", repo.name);
+                let result = match link_mode {
+                    LinkMode::Workspace => vcs.create_workspace(repo, env_path, workspace_name),
+                    LinkMode::Clone => vcs.clone_repo(repo, env_path),
+                };
+                match result {
                     Ok(()) => println!("done"),
                     Err(e) => println!("failed: {}", e),
                 }
@@ -153,11 +167,16 @@ fn delete_shade(
     vcs: &impl Vcs,
     config: &config::Config,
 ) -> Result<()> {
-    // Clean up jj workspaces
+    // Clean up jj workspaces (only for actual workspaces, not clones)
     let workspace_names = env::list_workspace_dirs(&environment.path);
     if !workspace_names.is_empty() {
         let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
         for ws_name in &workspace_names {
+            let ws_path = environment.path.join(ws_name);
+            if !env::is_jj_workspace(&ws_path) {
+                // Independent clone — nothing to clean up in the primary repo
+                continue;
+            }
             if let Some(repo) = repos.iter().find(|r| &r.name == ws_name)
                 && let Err(e) = vcs.remove_workspace(repo, &environment.label)
             {
@@ -355,8 +374,17 @@ fn main() -> Result<()> {
             docker::remove_container(&shade_name)?;
             println!("Removed container for {shade_name}");
         }
-        Command::New { skip_repos, repos } => {
+        Command::New {
+            skip_repos,
+            repos,
+            clone,
+        } => {
             let config = config::Config::load()?;
+            let link_mode = if clone {
+                LinkMode::Clone
+            } else {
+                config.link_mode
+            };
             let vcs = JjVcs;
             let delete_handler = |environment: &env::Environment| -> Result<()> {
                 delete_shade(environment, &vcs, &config)
@@ -365,11 +393,12 @@ fn main() -> Result<()> {
             match tui::run_tui(&config, delete_handler)? {
                 tui::TuiResult::Selected(environment) => {
                     if repos {
-                        select_and_create_workspaces(
+                        select_and_link_repos(
                             &vcs,
                             &config,
                             &environment.path,
                             &environment.label,
+                            link_mode,
                         )?;
                     }
                     println!("{}", environment.path.display());
@@ -383,7 +412,7 @@ fn main() -> Result<()> {
                     shade_cfg.save(&environment.path)?;
 
                     if !skip_repos {
-                        select_and_create_workspaces(&vcs, &config, &environment.path, &label)?;
+                        select_and_link_repos(&vcs, &config, &environment.path, &label, link_mode)?;
                     }
 
                     println!("{}", environment.path.display());
