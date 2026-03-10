@@ -488,7 +488,8 @@ pub fn build_image(
     }
     cmd.arg(base_image);
 
-    // Build a script that runs setup + installs the multiplexer
+    // Build a script: root steps first (user creation, tool installs),
+    // then setup as the configured user.
     let mut steps = Vec::new();
     if let Some(username) = user {
         println!("Creating user {username} in image...");
@@ -496,21 +497,27 @@ pub fn build_image(
             "id -u {username} >/dev/null 2>&1 || useradd -m -s /bin/bash {username}"
         ));
     }
-    if let Some(setup_cmd) = setup {
-        let setup_cmd = setup_cmd.trim();
-        let hash = hash_setup(setup_cmd);
-        steps.push(format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}"));
-    }
     if install_jj {
         println!("Including jj in image...");
         steps.push(
-            "curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && cargo-binstall -y jj-cli".to_string(),
+            "curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && cargo-binstall -y --install-path /usr/local/bin jj-cli".to_string(),
         );
     }
     if let Some(mux_kind) = multiplexer {
         let mux = mux_kind.get();
         println!("Including {} in image...", mux.name());
         steps.push(mux.install_cmd().to_string());
+    }
+    if let Some(setup_cmd) = setup {
+        let setup_cmd = setup_cmd.trim();
+        let hash = hash_setup(setup_cmd);
+        // Run setup as the configured user if one is set
+        let cmd_str = if let Some(username) = user {
+            format!("su - {username} -c '{setup_cmd}' && echo '{hash}' > {SETUP_MARKER}")
+        } else {
+            format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}")
+        };
+        steps.push(cmd_str);
     }
     if steps.is_empty() {
         steps.push("echo 'No setup command'".to_string());
