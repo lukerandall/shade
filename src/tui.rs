@@ -4,6 +4,8 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use jiff::civil::Date;
 use ratatui::{
     Frame, Terminal,
@@ -48,6 +50,7 @@ struct App {
     create_input: String,
     env_dir: String,
     today: Date,
+    matcher: SkimMatcherV2,
 }
 
 impl App {
@@ -62,23 +65,28 @@ impl App {
             create_input: String::new(),
             env_dir,
             today: jiff::Zoned::now().date(),
+            matcher: SkimMatcherV2::default(),
         }
     }
 
     fn apply_filter(&mut self) {
-        let query = self.filter.to_lowercase();
-        self.filtered_indices = self
-            .environments
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| {
-                if query.is_empty() {
-                    return true;
-                }
-                e.label.to_lowercase().contains(&query)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        if self.filter.is_empty() {
+            self.filtered_indices = (0..self.environments.len()).collect();
+        } else {
+            let mut scored: Vec<(usize, i64)> = self
+                .environments
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    self.matcher
+                        .fuzzy_match(&e.label, &self.filter)
+                        .map(|score| (i, score))
+                })
+                .collect();
+            // Sort by score descending (best matches first)
+            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            self.filtered_indices = scored.into_iter().map(|(i, _)| i).collect();
+        }
 
         // Keep cursor in bounds; the +1 accounts for "+ Create new"
         let max = self.total_items().saturating_sub(1);
@@ -521,6 +529,82 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_env(label: &str) -> Environment {
+        Environment {
+            name: format!("2026-03-10-{label}"),
+            label: label.to_string(),
+            date: "2026-03-10".parse().unwrap(),
+            path: std::path::PathBuf::from(format!("/tmp/{label}")),
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_filter_matches_all_containing() {
+        let mut app = App::new(
+            vec![
+                make_env("shade-project"),
+                make_env("shade"),
+                make_env("my-shade-thing"),
+                make_env("unrelated"),
+            ],
+            "/tmp".to_string(),
+        );
+        app.filter = "shade".to_string();
+        app.apply_filter();
+
+        // All three containing "shade" match, "unrelated" does not
+        assert_eq!(app.filtered_indices.len(), 3);
+        let labels: Vec<&str> = app
+            .filtered_indices
+            .iter()
+            .map(|&i| app.environments[i].label.as_str())
+            .collect();
+        assert!(labels.contains(&"shade"));
+        assert!(labels.contains(&"shade-project"));
+        assert!(labels.contains(&"my-shade-thing"));
+    }
+
+    #[test]
+    fn test_fuzzy_filter_no_match() {
+        let mut app = App::new(
+            vec![make_env("alpha"), make_env("beta")],
+            "/tmp".to_string(),
+        );
+        app.filter = "zzz".to_string();
+        app.apply_filter();
+
+        assert!(app.filtered_indices.is_empty());
+    }
+
+    #[test]
+    fn test_fuzzy_filter_empty_shows_all() {
+        let mut app = App::new(
+            vec![make_env("alpha"), make_env("beta")],
+            "/tmp".to_string(),
+        );
+        app.filter.clear();
+        app.apply_filter();
+
+        assert_eq!(app.filtered_indices.len(), 2);
+    }
+
+    #[test]
+    fn test_fuzzy_filter_non_contiguous() {
+        let mut app = App::new(
+            vec![make_env("my-feature"), make_env("other")],
+            "/tmp".to_string(),
+        );
+        // "mf" matches "my-feature" via m...f
+        app.filter = "mf".to_string();
+        app.apply_filter();
+
+        assert!(app.filtered_indices.len() >= 1);
+        assert_eq!(
+            app.environments[app.filtered_indices[0]].label,
+            "my-feature"
+        );
+    }
 
     #[test]
     fn test_format_relative_date_today() {
