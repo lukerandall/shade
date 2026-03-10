@@ -9,12 +9,23 @@ use crate::env_vars::EnvValue;
 
 const FILENAME: &str = "shade.toml";
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LinkedRepo {
+    pub name: String,
+    /// Absolute host path to the clone in the shade dir.
+    pub host_path: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShadeConfig {
     #[serde(default)]
     pub env: HashMap<String, EnvValue>,
     #[serde(default)]
     pub docker: DockerConfigOverride,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub workspace_repos: Vec<LinkedRepo>,
 }
 
 impl ShadeConfig {
@@ -82,5 +93,29 @@ mod tests {
     fn test_image_defaults_to_none() {
         let config = ShadeConfig::default();
         assert!(config.docker.image.is_none());
+    }
+
+    #[test]
+    fn test_linked_repo_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let config = ShadeConfig {
+            label: Some("my-feature".to_string()),
+            workspace_repos: vec![
+                LinkedRepo {
+                    name: "core".to_string(),
+                    host_path: "/home/user/Shades/2026-03-09-test/core".to_string(),
+                },
+                LinkedRepo {
+                    name: "acme/dashboard".to_string(),
+                    host_path: "/home/user/Shades/2026-03-09-test/acme/dashboard".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        config.save(tmp.path()).unwrap();
+
+        let loaded = ShadeConfig::load(tmp.path()).unwrap();
+        assert_eq!(loaded.label.as_deref(), Some("my-feature"));
+        assert_eq!(loaded.workspace_repos, config.workspace_repos);
     }
 }

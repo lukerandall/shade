@@ -21,6 +21,8 @@ use vcs::LinkMode;
 use vcs::Vcs;
 use vcs::jj::JjVcs;
 
+use crate::container::DockerConfig;
+
 #[derive(Parser)]
 #[command(name = "shade", about = "Ephemeral development environments", version)]
 #[command(subcommand_required = true, arg_required_else_help = true)]
@@ -122,16 +124,18 @@ enum Command {
     Keychain(KeychainCommand),
 }
 
+/// Always clones repos into the shade dir. When workspace mode is selected,
+/// returns the list of repos that should have jj workspaces created inside the
+/// container (saved to shade.toml as workspace_repos).
 fn select_and_link_repos(
     vcs: &impl Vcs,
     config: &config::Config,
     env_path: &std::path::Path,
-    workspace_name: &str,
     link_mode: LinkMode,
-) -> Result<()> {
+) -> Result<Vec<shade_config::LinkedRepo>> {
     let repos = vcs.discover_repos(&config.code_dirs)?;
     if repos.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let existing = env::list_workspace_dirs(env_path);
@@ -139,60 +143,36 @@ fn select_and_link_repos(
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
+    let mut workspace_repos = Vec::new();
+
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
-            let verb = match link_mode {
-                LinkMode::Workspace => "Creating workspace",
-                LinkMode::Clone => "Cloning",
-            };
             for repo in &selected {
-                print!("{verb} for {}... ", repo.name);
-                let result = match link_mode {
-                    LinkMode::Workspace => vcs.create_workspace(repo, env_path, workspace_name),
-                    LinkMode::Clone => vcs.clone_repo(repo, env_path),
-                };
-                match result {
-                    Ok(()) => println!("done"),
+                print!("Cloning {}... ", repo.name);
+                match vcs.clone_repo(repo, env_path) {
+                    Ok(()) => {
+                        println!("done");
+                        if link_mode == LinkMode::Workspace {
+                            workspace_repos.push(shade_config::LinkedRepo {
+                                name: repo.name.clone(),
+                                host_path: env_path.join(&repo.name).to_string_lossy().to_string(),
+                            });
+                        }
+                    }
                     Err(e) => println!("failed: {}", e),
                 }
             }
         }
         repo_select::RepoSelectResult::Cancelled => {}
     }
-    Ok(())
+    Ok(workspace_repos)
 }
 
-fn delete_shade(
-    environment: &env::Environment,
-    vcs: &impl Vcs,
-    config: &config::Config,
-) -> Result<()> {
-    // Clean up jj workspaces (only for actual workspaces, not clones)
-    let workspace_names = env::list_workspace_dirs(&environment.path);
-    if !workspace_names.is_empty() {
-        let repos = vcs.discover_repos(&config.code_dirs).unwrap_or_default();
-        for ws_name in &workspace_names {
-            let ws_path = environment.path.join(ws_name);
-            if !env::is_jj_workspace(&ws_path) {
-                // Independent clone — nothing to clean up in the primary repo
-                continue;
-            }
-            if let Some(repo) = repos.iter().find(|r| &r.name == ws_name)
-                && let Err(e) = vcs.remove_workspace(repo, &environment.label)
-            {
-                eprintln!(
-                    "warning: failed to remove jj workspace for {ws_name}: {e}\n\
-                     You may need to run `jj workspace forget {}` manually.",
-                    environment.label
-                );
-            }
-        }
-    }
-
+fn delete_shade(environment: &env::Environment) -> Result<()> {
     // Clean up docker container
     docker::remove_container(&environment.name)?;
 
-    // Remove the shade directory
+    // Remove the shade directory (repos are always clones, fully contained)
     env::delete_environment(environment)?;
     Ok(())
 }
@@ -342,8 +322,7 @@ fn main() -> Result<()> {
                 .iter()
                 .find(|e| e.name == *name)
                 .with_context(|| format!("shade not found: {name}"))?;
-            let vcs = JjVcs;
-            delete_shade(environment, &vcs, &config)?;
+            delete_shade(environment)?;
             println!("Deleted {name}");
         }
         Command::Run | Command::Docker(DockerCommand::Run) => {
@@ -353,12 +332,14 @@ fn main() -> Result<()> {
         Command::Docker(DockerCommand::Build) => {
             let config = config::Config::load()?;
             let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
+            let install_jj = config.link_mode == LinkMode::Workspace;
             docker::build_image(
                 &config.docker.image,
                 config.docker.setup.as_deref(),
                 config.docker.multiplexer.as_ref(),
                 &resolved,
                 &config.docker.limits,
+                install_jj,
             )?;
         }
         Command::Docker(DockerCommand::Clean) => {
@@ -385,35 +366,52 @@ fn main() -> Result<()> {
             } else {
                 config.link_mode
             };
+
+            // Workspace mode requires Docker
+            if link_mode == LinkMode::Workspace && config.docker == DockerConfig::default() {
+                anyhow::bail!(
+                    "workspace mode requires Docker configuration. Use --clone for non-Docker shades"
+                );
+            }
+
             let vcs = JjVcs;
-            let delete_handler = |environment: &env::Environment| -> Result<()> {
-                delete_shade(environment, &vcs, &config)
-            };
+            let delete_handler =
+                |environment: &env::Environment| -> Result<()> { delete_shade(environment) };
 
             match tui::run_tui(&config, delete_handler)? {
                 tui::TuiResult::Selected(environment) => {
                     if repos {
-                        select_and_link_repos(
-                            &vcs,
-                            &config,
-                            &environment.path,
-                            &environment.label,
-                            link_mode,
-                        )?;
+                        let workspace_repos =
+                            select_and_link_repos(&vcs, &config, &environment.path, link_mode)?;
+                        if !workspace_repos.is_empty() {
+                            let mut shade_cfg = shade_config::ShadeConfig::load(&environment.path)?;
+                            shade_cfg.label = Some(environment.label.clone());
+                            shade_cfg.workspace_repos = workspace_repos;
+                            shade_cfg.save(&environment.path)?;
+                        }
                     }
                     println!("{}", environment.path.display());
                 }
                 tui::TuiResult::Create(label) => {
                     let environment = env::create_environment(&config.env_dir, &label)?;
+
+                    let mut workspace_repos = Vec::new();
+                    if !skip_repos {
+                        workspace_repos =
+                            select_and_link_repos(&vcs, &config, &environment.path, link_mode)?;
+                    }
+
                     let shade_cfg = shade_config::ShadeConfig {
                         env: config.env.clone(),
+                        label: if workspace_repos.is_empty() {
+                            None
+                        } else {
+                            Some(label.clone())
+                        },
+                        workspace_repos,
                         ..Default::default()
                     };
                     shade_cfg.save(&environment.path)?;
-
-                    if !skip_repos {
-                        select_and_link_repos(&vcs, &config, &environment.path, &label, link_mode)?;
-                    }
 
                     println!("{}", environment.path.display());
                 }
