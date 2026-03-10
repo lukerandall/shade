@@ -497,11 +497,17 @@ pub fn build_image(
             "id -u {username} >/dev/null 2>&1 || useradd -m -s /bin/bash {username}"
         ));
     }
+    // Install cargo-binstall if any tool needs it (jj or multiplexer that uses it)
+    let needs_binstall =
+        install_jj || multiplexer.is_some_and(|k| k.get().install_cmd().contains("binstall"));
+    if needs_binstall {
+        steps.push(
+            "apt-get update -qq && apt-get install -y -qq curl >/dev/null && curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && export PATH=\"/root/.cargo/bin:$PATH\"".to_string(),
+        );
+    }
     if install_jj {
         println!("Including jj in image...");
-        steps.push(
-            "apt-get update -qq && apt-get install -y -qq curl >/dev/null && curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && export PATH=\"/root/.cargo/bin:$PATH\" && cargo-binstall -y --install-path /usr/local/bin jj-cli".to_string(),
-        );
+        steps.push("cargo-binstall -y --install-path /usr/local/bin jj-cli".to_string());
     }
     if let Some(mux_kind) = multiplexer {
         let mux = mux_kind.get();
