@@ -333,7 +333,7 @@ fn setup_script(
         let hash = hash_setup(cmd);
         let marker = format!("{SETUP_MARKER}-user");
         let run_cmd = if let Some(username) = user {
-            format!("su - {username} -c '{cmd}'")
+            format!("runuser -l {username} -c '{cmd}'")
         } else {
             cmd.to_string()
         };
@@ -547,7 +547,7 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
         *install_jj || multiplexer.is_some_and(|k| k.get().install_cmd().contains("binstall"));
     if needs_binstall {
         steps.push(
-            "apt-get update -qq && apt-get install -y -qq curl >/dev/null && curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && export PATH=\"/root/.cargo/bin:$PATH\"".to_string(),
+            "apt-get update -qq && apt-get install -y -qq curl >/dev/null && curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && mv /root/.cargo/bin/cargo-binstall /usr/local/bin/".to_string(),
         );
     }
     if *install_jj {
@@ -567,7 +567,7 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
     if let Some(cmd) = user_setup {
         let cmd = cmd.trim();
         if let Some(username) = user {
-            steps.push(format!("su - {username} -c '{cmd}'"));
+            steps.push(format!("runuser -l {username} -c '{cmd}'"));
         } else {
             steps.push(cmd.to_string());
         }
@@ -907,7 +907,7 @@ mod tests {
             &[],
         );
 
-        assert!(script.contains("su - dev -c 'npm install'"));
+        assert!(script.contains("runuser -l dev -c 'npm install'"));
     }
 
     #[test]
@@ -925,7 +925,7 @@ mod tests {
         // system_setup runs first (no su)
         assert!(script.contains("apt-get install -y git"));
         // user_setup runs as user
-        assert!(script.contains("su - dev -c 'npm install'"));
+        assert!(script.contains("runuser -l dev"));
     }
 
     #[test]
