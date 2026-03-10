@@ -168,6 +168,57 @@ fn select_and_link_repos(
     Ok(workspace_repos)
 }
 
+/// Write CLAUDE.md and AGENTS.md into the shade directory so they are visible
+/// inside the container at /workspace/.
+fn write_agent_docs(
+    shade_path: &std::path::Path,
+    repo_names: &[String],
+    workspace_repos: &[shade_config::LinkedRepo],
+) -> Result<()> {
+    std::fs::write(shade_path.join("CLAUDE.md"), "@AGENTS.md\n")?;
+
+    let has_workspaces = !workspace_repos.is_empty();
+    let mut doc = String::from("# Shade Environment\n\n");
+
+    doc.push_str("## Directory Layout\n\n");
+    if has_workspaces {
+        doc.push_str(
+            "- `/workspace/` — Working directory. Contains jj workspaces for each repo.\n",
+        );
+        doc.push_str(
+            "- `/repos/` — Read-only clones mounted from the host. Source for the jj workspaces.\n",
+        );
+    } else {
+        doc.push_str("- `/workspace/` — Working directory. Contains cloned repos.\n");
+    }
+
+    if !repo_names.is_empty() {
+        doc.push_str("\n## Repos\n\n");
+        for name in repo_names {
+            let is_ws = workspace_repos.iter().any(|r| r.name == *name);
+            if has_workspaces && is_ws {
+                doc.push_str(&format!(
+                    "- `{name}` — jj workspace at `/workspace/{name}` (clone at `/repos/{name}`)\n"
+                ));
+            } else {
+                doc.push_str(&format!("- `{name}` — clone at `/workspace/{name}`\n"));
+            }
+        }
+    }
+
+    doc.push_str("\n## Tools\n\n");
+    doc.push_str("- **Version control**: jj (Jujutsu)\n");
+    if has_workspaces {
+        doc.push_str(
+            "- Workspaces are jj workspaces — commit, branch, and push from `/workspace/{name}`\n",
+        );
+        doc.push_str("- Do not modify repos under `/repos/` directly\n");
+    }
+
+    std::fs::write(shade_path.join("AGENTS.md"), doc)?;
+    Ok(())
+}
+
 fn delete_shade(environment: &env::Environment) -> Result<()> {
     // Clean up docker container
     docker::remove_container(&environment.name)?;
@@ -386,9 +437,11 @@ fn main() -> Result<()> {
                         if !workspace_repos.is_empty() {
                             let mut shade_cfg = shade_config::ShadeConfig::load(&environment.path)?;
                             shade_cfg.label = Some(environment.label.clone());
-                            shade_cfg.workspace_repos = workspace_repos;
+                            shade_cfg.workspace_repos = workspace_repos.clone();
                             shade_cfg.save(&environment.path)?;
                         }
+                        let repo_names = env::list_workspace_dirs(&environment.path);
+                        write_agent_docs(&environment.path, &repo_names, &workspace_repos)?;
                     }
                     println!("{}", environment.path.display());
                 }
@@ -408,10 +461,13 @@ fn main() -> Result<()> {
                         } else {
                             Some(label.clone())
                         },
-                        workspace_repos,
+                        workspace_repos: workspace_repos.clone(),
                         ..Default::default()
                     };
                     shade_cfg.save(&environment.path)?;
+
+                    let repo_names: Vec<String> = env::list_workspace_dirs(&environment.path);
+                    write_agent_docs(&environment.path, &repo_names, &workspace_repos)?;
 
                     println!("{}", environment.path.display());
                 }
