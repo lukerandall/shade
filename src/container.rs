@@ -35,7 +35,10 @@ fn default_no_new_privileges() -> bool {
 pub struct DockerConfig {
     #[serde(default = "default_image")]
     pub image: String,
-    pub setup: Option<String>,
+    /// System-level setup command, runs as root during image build.
+    pub system_setup: Option<String>,
+    /// User-level setup command, runs as the configured user during image build.
+    pub user_setup: Option<String>,
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
     #[serde(default)]
@@ -50,7 +53,8 @@ impl Default for DockerConfig {
     fn default() -> Self {
         Self {
             image: default_image(),
-            setup: None,
+            system_setup: None,
+            user_setup: None,
             user: None,
             multiplexer: None,
             path: Vec::new(),
@@ -64,7 +68,8 @@ impl Default for DockerConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DockerConfigOverride {
     pub image: Option<String>,
-    pub setup: Option<String>,
+    pub system_setup: Option<String>,
+    pub user_setup: Option<String>,
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
     pub path: Option<Vec<String>>,
@@ -80,7 +85,14 @@ impl DockerConfig {
                 .image
                 .clone()
                 .unwrap_or_else(|| self.image.clone()),
-            setup: overrides.setup.clone().or_else(|| self.setup.clone()),
+            system_setup: overrides
+                .system_setup
+                .clone()
+                .or_else(|| self.system_setup.clone()),
+            user_setup: overrides
+                .user_setup
+                .clone()
+                .or_else(|| self.user_setup.clone()),
             user: overrides.user.clone().or_else(|| self.user.clone()),
             multiplexer: overrides
                 .multiplexer

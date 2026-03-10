@@ -384,15 +384,16 @@ fn main() -> Result<()> {
             let config = config::Config::load()?;
             let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
             let install_jj = config.link_mode == LinkMode::Workspace;
-            docker::build_image(
-                &config.docker.image,
-                config.docker.setup.as_deref(),
-                config.docker.multiplexer.as_ref(),
-                &resolved,
-                &config.docker.limits,
+            docker::build_image(&docker::BuildImageOptions {
+                base_image: &config.docker.image,
+                system_setup: config.docker.system_setup.as_deref(),
+                user_setup: config.docker.user_setup.as_deref(),
+                multiplexer: config.docker.multiplexer.as_ref(),
+                env: &resolved,
+                limits: &config.docker.limits,
                 install_jj,
-                config.docker.user.as_deref(),
-            )?;
+                user: config.docker.user.as_deref(),
+            })?;
         }
         Command::Docker(DockerCommand::Clean) => {
             docker::clean_images()?;

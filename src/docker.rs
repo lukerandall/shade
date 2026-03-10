@@ -183,15 +183,19 @@ pub fn run_docker(
             let user = docker.user.as_deref();
             let has_prebuilt = prebuilt_image_exists(
                 &docker.image,
-                docker.setup.as_deref(),
+                docker.system_setup.as_deref(),
+                docker.user_setup.as_deref(),
                 mux,
                 install_jj,
                 user,
             );
 
-            if !has_prebuilt
-                && (docker.setup.is_some() || mux.is_some() || install_jj || user.is_some())
-            {
+            let needs_prebuilt = docker.system_setup.is_some()
+                || docker.user_setup.is_some()
+                || mux.is_some()
+                || install_jj
+                || user.is_some();
+            if !has_prebuilt && needs_prebuilt {
                 bail!(
                     "no prebuilt image found. Run `shade docker build` first to bake in setup and tools"
                 );
@@ -200,7 +204,8 @@ pub fn run_docker(
             let effective_image = if has_prebuilt {
                 let prebuilt = prebuilt_image_name(
                     &docker.image,
-                    docker.setup.as_deref(),
+                    docker.system_setup.as_deref(),
+                    docker.user_setup.as_deref(),
                     mux,
                     install_jj,
                     user,
@@ -219,7 +224,8 @@ pub fn run_docker(
                 image: &effective_image,
                 env: &resolved,
                 mounts: &docker.mounts,
-                setup: docker.setup.as_deref(),
+                system_setup: docker.system_setup.as_deref(),
+                user_setup: docker.user_setup.as_deref(),
                 user: docker.user.as_deref(),
                 multiplexer: mux,
                 paths,
@@ -278,7 +284,9 @@ fn path_export(paths: &[String]) -> Option<String> {
 }
 
 fn setup_script(
-    setup: Option<&str>,
+    system_setup: Option<&str>,
+    user_setup: Option<&str>,
+    user: Option<&str>,
     mux: Option<&MultiplexerKind>,
     paths: &[String],
     detach: bool,
@@ -312,11 +320,25 @@ fn setup_script(
         }
     }
 
-    if let Some(cmd) = setup {
+    if let Some(cmd) = system_setup {
         let cmd = cmd.trim();
         let hash = hash_setup(cmd);
         parts.push(format!(
             "if [ ! -f {SETUP_MARKER} ] || [ \"$(cat {SETUP_MARKER})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {SETUP_MARKER}; fi"
+        ));
+    }
+
+    if let Some(cmd) = user_setup {
+        let cmd = cmd.trim();
+        let hash = hash_setup(cmd);
+        let marker = format!("{SETUP_MARKER}-user");
+        let run_cmd = if let Some(username) = user {
+            format!("su - {username} -c '{cmd}'")
+        } else {
+            cmd.to_string()
+        };
+        parts.push(format!(
+            "if [ ! -f {marker} ] || [ \"$(cat {marker})\" != \"{hash}\" ]; then {run_cmd} && echo '{hash}' > {marker}; fi"
         ));
     }
 
@@ -339,7 +361,8 @@ struct CreateOptions<'a> {
     image: &'a str,
     env: &'a [(String, String)],
     mounts: &'a [String],
-    setup: Option<&'a str>,
+    system_setup: Option<&'a str>,
+    user_setup: Option<&'a str>,
     user: Option<&'a str>,
     multiplexer: Option<&'a MultiplexerKind>,
     paths: &'a [String],
@@ -374,7 +397,9 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     }
     cmd.arg(opts.image);
     let script = setup_script(
-        opts.setup,
+        opts.system_setup,
+        opts.user_setup,
+        opts.user,
         opts.multiplexer,
         opts.paths,
         opts.detach,
@@ -453,18 +478,38 @@ fn exec_into(
     Ok(())
 }
 
+pub struct BuildImageOptions<'a> {
+    pub base_image: &'a str,
+    pub system_setup: Option<&'a str>,
+    pub user_setup: Option<&'a str>,
+    pub multiplexer: Option<&'a MultiplexerKind>,
+    pub env: &'a [(String, String)],
+    pub limits: &'a ContainerLimits,
+    pub install_jj: bool,
+    pub user: Option<&'a str>,
+}
+
 /// Build a pre-configured image by running setup on the base image and committing.
 /// Returns the image name.
-pub fn build_image(
-    base_image: &str,
-    setup: Option<&str>,
-    multiplexer: Option<&MultiplexerKind>,
-    env: &[(String, String)],
-    limits: &ContainerLimits,
-    install_jj: bool,
-    user: Option<&str>,
-) -> Result<String> {
-    let image_tag = prebuilt_image_name(base_image, setup, multiplexer, install_jj, user);
+pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
+    let BuildImageOptions {
+        base_image,
+        system_setup,
+        user_setup,
+        multiplexer,
+        env,
+        limits,
+        install_jj,
+        user,
+    } = opts;
+    let image_tag = prebuilt_image_name(
+        base_image,
+        *system_setup,
+        *user_setup,
+        *multiplexer,
+        *install_jj,
+        *user,
+    );
 
     // Check if image already exists
     let check = Command::new("docker")
@@ -483,10 +528,10 @@ pub fn build_image(
     let mut cmd = Command::new("docker");
     cmd.args(["run", "--name", &temp_name]);
     let _ = limits; // limits are for runtime containers, not build
-    for (key, value) in env {
+    for (key, value) in *env {
         cmd.args(["-e", &format!("{key}={value}")]);
     }
-    cmd.arg(base_image);
+    cmd.arg(*base_image);
 
     // Build a script: root steps first (user creation, tool installs),
     // then setup as the configured user.
@@ -499,13 +544,13 @@ pub fn build_image(
     }
     // Install cargo-binstall if any tool needs it (jj or multiplexer that uses it)
     let needs_binstall =
-        install_jj || multiplexer.is_some_and(|k| k.get().install_cmd().contains("binstall"));
+        *install_jj || multiplexer.is_some_and(|k| k.get().install_cmd().contains("binstall"));
     if needs_binstall {
         steps.push(
             "apt-get update -qq && apt-get install -y -qq curl >/dev/null && curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && export PATH=\"/root/.cargo/bin:$PATH\"".to_string(),
         );
     }
-    if install_jj {
+    if *install_jj {
         println!("Including jj in image...");
         steps.push("cargo-binstall -y --install-path /usr/local/bin jj-cli".to_string());
     }
@@ -514,10 +559,18 @@ pub fn build_image(
         println!("Including {} in image...", mux.name());
         steps.push(mux.install_cmd().to_string());
     }
-    if let Some(setup_cmd) = setup {
-        let setup_cmd = setup_cmd.trim();
-        let hash = hash_setup(setup_cmd);
-        steps.push(format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}"));
+    if let Some(cmd) = system_setup {
+        let cmd = cmd.trim();
+        let hash = hash_setup(cmd);
+        steps.push(format!("{cmd} && echo '{hash}' > {SETUP_MARKER}"));
+    }
+    if let Some(cmd) = user_setup {
+        let cmd = cmd.trim();
+        if let Some(username) = user {
+            steps.push(format!("su - {username} -c '{cmd}'"));
+        } else {
+            steps.push(cmd.to_string());
+        }
     }
     if steps.is_empty() {
         steps.push("echo 'No setup command'".to_string());
@@ -559,12 +612,20 @@ pub fn build_image(
 /// Check if a prebuilt image exists for the given base image + setup + multiplexer combo.
 pub fn prebuilt_image_exists(
     base_image: &str,
-    setup: Option<&str>,
+    system_setup: Option<&str>,
+    user_setup: Option<&str>,
     multiplexer: Option<&MultiplexerKind>,
     install_jj: bool,
     user: Option<&str>,
 ) -> bool {
-    let tag = prebuilt_image_name(base_image, setup, multiplexer, install_jj, user);
+    let tag = prebuilt_image_name(
+        base_image,
+        system_setup,
+        user_setup,
+        multiplexer,
+        install_jj,
+        user,
+    );
     Command::new("docker")
         .args(["image", "inspect", &tag])
         .output()
@@ -573,7 +634,8 @@ pub fn prebuilt_image_exists(
 
 fn prebuilt_image_name(
     base_image: &str,
-    setup: Option<&str>,
+    system_setup: Option<&str>,
+    user_setup: Option<&str>,
     multiplexer: Option<&MultiplexerKind>,
     install_jj: bool,
     user: Option<&str>,
@@ -585,8 +647,9 @@ fn prebuilt_image_name(
     let jj_str = if install_jj { "jj" } else { "" };
     let user_str = user.unwrap_or("");
     let combined = format!(
-        "{base_image}:{setup}:{mux_str}:{jj_str}:{user_str}",
-        setup = setup.unwrap_or("")
+        "{base_image}:{}:{}:{mux_str}:{jj_str}:{user_str}",
+        system_setup.unwrap_or(""),
+        user_setup.unwrap_or(""),
     );
     let hash = hash_setup(&combined);
     format!("shade-prebuilt:{hash:x}")
@@ -812,7 +875,7 @@ mod tests {
         let cmds = vec![
             "if [ ! -d /workspace/core/.jj ]; then cd /repos/core && jj workspace add --name feat /workspace/core; fi".to_string(),
         ];
-        let script = setup_script(None, None, &[], false, &cmds);
+        let script = setup_script(None, None, None, None, &[], false, &cmds);
 
         // Should contain jj availability check
         assert!(script.contains("command -v jj"));
@@ -824,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_setup_script_without_workspace_cmds() {
-        let script = setup_script(None, None, &[], false, &[]);
+        let script = setup_script(None, None, None, None, &[], false, &[]);
 
         // Should NOT contain jj check
         assert!(!script.contains("command -v jj"));
@@ -833,18 +896,65 @@ mod tests {
     }
 
     #[test]
+    fn test_setup_script_user_setup_runs_as_user() {
+        let script = setup_script(
+            None,
+            Some("npm install"),
+            Some("dev"),
+            None,
+            &[],
+            false,
+            &[],
+        );
+
+        assert!(script.contains("su - dev -c 'npm install'"));
+    }
+
+    #[test]
+    fn test_setup_script_system_and_user_setup() {
+        let script = setup_script(
+            Some("apt-get install -y git"),
+            Some("npm install"),
+            Some("dev"),
+            None,
+            &[],
+            false,
+            &[],
+        );
+
+        // system_setup runs first (no su)
+        assert!(script.contains("apt-get install -y git"));
+        // user_setup runs as user
+        assert!(script.contains("su - dev -c 'npm install'"));
+    }
+
+    #[test]
     fn test_prebuilt_image_name_with_jj() {
-        let name_without = prebuilt_image_name("ubuntu:latest", None, None, false, None);
-        let name_with = prebuilt_image_name("ubuntu:latest", None, None, true, None);
+        let name_without = prebuilt_image_name("ubuntu:latest", None, None, None, false, None);
+        let name_with = prebuilt_image_name("ubuntu:latest", None, None, None, true, None);
         // Different install_jj should produce different image names
         assert_ne!(name_without, name_with);
     }
 
     #[test]
     fn test_prebuilt_image_name_with_user() {
-        let name_without = prebuilt_image_name("ubuntu:latest", None, None, false, None);
-        let name_with = prebuilt_image_name("ubuntu:latest", None, None, false, Some("dev"));
+        let name_without = prebuilt_image_name("ubuntu:latest", None, None, None, false, None);
+        let name_with = prebuilt_image_name("ubuntu:latest", None, None, None, false, Some("dev"));
         // Different user should produce different image names
+        assert_ne!(name_without, name_with);
+    }
+
+    #[test]
+    fn test_prebuilt_image_name_with_user_setup() {
+        let name_without = prebuilt_image_name("ubuntu:latest", None, None, None, false, None);
+        let name_with = prebuilt_image_name(
+            "ubuntu:latest",
+            None,
+            Some("npm install"),
+            None,
+            false,
+            None,
+        );
         assert_ne!(name_without, name_with);
     }
 }
