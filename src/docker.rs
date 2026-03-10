@@ -564,6 +564,12 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
         steps.push(format!(
             "id -u {username} >/dev/null 2>&1 || useradd -m -s /bin/bash {username}"
         ));
+        if *install_jj {
+            // jj needs a writable per-repo secure config directory
+            steps.push(format!(
+                "mkdir -p /home/{username}/.config/jj && chown -R {username} /home/{username}/.config"
+            ));
+        }
     }
     // Install cargo-binstall if any tool needs it (jj or multiplexer that uses it)
     let needs_binstall =
