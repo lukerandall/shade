@@ -120,45 +120,6 @@ pub fn create_environment(env_dir: &str, label: &str) -> Result<Environment> {
     })
 }
 
-/// List the names of subdirectories inside `dir` that contain a `.jj` directory.
-///
-/// Used to discover which repos have workspaces checked out inside a shade.
-/// Handles both flat repos (e.g. "core") and grouped repos (e.g. "acme/core").
-pub fn list_workspace_dirs(dir: &std::path::Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut result = Vec::new();
-    for entry in entries.filter_map(|e| e.ok()) {
-        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if path.join(".jj").is_dir() {
-            result.push(name);
-        } else {
-            // Check one level deeper for grouped repos
-            let Ok(sub_entries) = std::fs::read_dir(&path) else {
-                continue;
-            };
-            for sub_entry in sub_entries.filter_map(|e| e.ok()) {
-                if !sub_entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    continue;
-                }
-                if sub_entry.path().join(".jj").is_dir() {
-                    result.push(format!(
-                        "{}/{}",
-                        name,
-                        sub_entry.file_name().to_string_lossy()
-                    ));
-                }
-            }
-        }
-    }
-    result
-}
-
 /// Delete an environment by removing its directory recursively.
 pub fn delete_environment(env: &Environment) -> Result<()> {
     if !env.path.exists() {
@@ -313,30 +274,6 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("does not exist"));
-    }
-
-    #[test]
-    fn test_list_workspace_dirs_nested() {
-        let tmp = TempDir::new().unwrap();
-        let shade = tmp.path();
-
-        // Flat workspace
-        fs::create_dir_all(shade.join("standalone/.jj")).unwrap();
-        // Grouped workspaces
-        fs::create_dir_all(shade.join("acme/core/.jj")).unwrap();
-        fs::create_dir_all(shade.join("acme/dashboard/.jj")).unwrap();
-        // Non-workspace subdirectory
-        fs::create_dir_all(shade.join("acme/docs")).unwrap();
-        // A file, not a directory
-        fs::write(shade.join("some-file"), "").unwrap();
-
-        let mut dirs = list_workspace_dirs(shade);
-        dirs.sort();
-
-        assert_eq!(dirs.len(), 3);
-        assert_eq!(dirs[0], "acme/core");
-        assert_eq!(dirs[1], "acme/dashboard");
-        assert_eq!(dirs[2], "standalone");
     }
 
     #[test]

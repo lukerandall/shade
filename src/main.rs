@@ -18,10 +18,6 @@ use clap::Parser;
 
 use keychain::SecretStore;
 use vcs::LinkMode;
-use vcs::Vcs;
-use vcs::jj::JjVcs;
-
-use crate::container::DockerConfig;
 
 #[derive(Parser)]
 #[command(name = "shade", about = "Ephemeral development environments", version)]
@@ -37,6 +33,10 @@ enum ConfigCommand {
     New,
     /// Open the configuration file in $EDITOR
     Edit,
+    /// Print a default config to stdout
+    Generate,
+    /// Print the config file path
+    Path,
 }
 
 #[derive(clap::Subcommand)]
@@ -88,7 +88,7 @@ enum Command {
         #[arg(short = 'r', long = "repos")]
         repos: bool,
 
-        /// Clone repos instead of creating jj workspaces (independent copies)
+        /// Clone repos instead of creating workspaces (independent copies)
         #[arg(short = 'c', long = "clone")]
         clone: bool,
     },
@@ -124,21 +124,24 @@ enum Command {
     Keychain(KeychainCommand),
 }
 
-/// Always clones repos into the shade dir. When workspace mode is selected,
-/// returns the list of repos that should have jj workspaces created inside the
-/// container (saved to shade.toml as workspace_repos).
+/// Only records workspace repos in the shade config (workspace creation happens
+/// inside the container). For clone mode, clones repos into the shade dir.
 fn select_and_link_repos(
-    vcs: &impl Vcs,
+    vcs: &dyn vcs::Vcs,
     config: &config::Config,
     env_path: &std::path::Path,
     link_mode: LinkMode,
 ) -> Result<Vec<shade_config::LinkedRepo>> {
+    if config.code_dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let repos = vcs.discover_repos(&config.code_dirs)?;
     if repos.is_empty() {
         return Ok(Vec::new());
     }
 
-    let existing = env::list_workspace_dirs(env_path);
+    let existing = vcs::list_repo_dirs(env_path);
     let current_repo = std::env::current_dir()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
@@ -148,18 +151,22 @@ fn select_and_link_repos(
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
             for repo in &selected {
-                print!("Cloning {}... ", repo.name);
-                match vcs.clone_repo(repo, env_path) {
-                    Ok(()) => {
-                        println!("done");
-                        if link_mode == LinkMode::Workspace {
-                            workspace_repos.push(shade_config::LinkedRepo {
-                                name: repo.name.clone(),
-                                host_path: env_path.join(&repo.name).to_string_lossy().to_string(),
-                            });
+                match link_mode {
+                    LinkMode::Workspace => {
+                        // Don't clone on host — workspace is created inside container
+                        workspace_repos.push(shade_config::LinkedRepo {
+                            name: repo.name.clone(),
+                            primary_repo_path: repo.path.to_string_lossy().to_string(),
+                        });
+                        println!("Linked {} (workspace)", repo.name);
+                    }
+                    LinkMode::Clone => {
+                        print!("Cloning {}... ", repo.name);
+                        match vcs.clone_repo(repo, env_path) {
+                            Ok(()) => println!("done"),
+                            Err(e) => println!("failed: {}", e),
                         }
                     }
-                    Err(e) => println!("failed: {}", e),
                 }
             }
         }
@@ -174,6 +181,7 @@ fn write_agent_docs(
     shade_path: &std::path::Path,
     repo_names: &[String],
     workspace_repos: &[shade_config::LinkedRepo],
+    vcs_name: &str,
 ) -> Result<()> {
     std::fs::write(shade_path.join("CLAUDE.md"), "@AGENTS.md\n")?;
 
@@ -182,11 +190,11 @@ fn write_agent_docs(
 
     doc.push_str("## Directory Layout\n\n");
     if has_workspaces {
+        doc.push_str(&format!(
+            "- `/workspace/` — Working directory. Contains {vcs_name} workspaces for each repo.\n"
+        ));
         doc.push_str(
-            "- `/workspace/` — Working directory. Contains jj workspaces for each repo.\n",
-        );
-        doc.push_str(
-            "- `/repos/` — Read-only clones mounted from the host. Source for the jj workspaces.\n",
+            "- `/repos/` — Read-only clones mounted from the host. Source for the workspaces.\n",
         );
     } else {
         doc.push_str("- `/workspace/` — Working directory. Contains cloned repos.\n");
@@ -198,7 +206,7 @@ fn write_agent_docs(
             let is_ws = workspace_repos.iter().any(|r| r.name == *name);
             if has_workspaces && is_ws {
                 doc.push_str(&format!(
-                    "- `{name}` — jj workspace at `/workspace/{name}` (clone at `/repos/{name}`)\n"
+                    "- `{name}` — {vcs_name} workspace at `/workspace/{name}` (clone at `/repos/{name}`)\n"
                 ));
             } else {
                 doc.push_str(&format!("- `{name}` — clone at `/workspace/{name}`\n"));
@@ -207,11 +215,11 @@ fn write_agent_docs(
     }
 
     doc.push_str("\n## Tools\n\n");
-    doc.push_str("- **Version control**: jj (Jujutsu)\n");
+    doc.push_str(&format!("- **Version control**: {vcs_name}\n"));
     if has_workspaces {
-        doc.push_str(
-            "- Workspaces are jj workspaces — commit, branch, and push from `/workspace/{name}`\n",
-        );
+        doc.push_str(&format!(
+            "- Workspaces are {vcs_name} workspaces — commit, branch, and push from `/workspace/{{name}}`\n",
+        ));
         doc.push_str("- Do not modify repos under `/repos/` directly\n");
     }
 
@@ -220,10 +228,7 @@ fn write_agent_docs(
 }
 
 fn delete_shade(environment: &env::Environment) -> Result<()> {
-    // Clean up docker container
     docker::remove_container(&environment.name)?;
-
-    // Remove the shade directory (repos are always clones, fully contained)
     env::delete_environment(environment)?;
     Ok(())
 }
@@ -255,12 +260,15 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
         .context("invalid shade path")?
         .to_string_lossy();
 
+    let vcs = vcs::create_vcs(config.vcs_kind);
+
     docker::run_docker(
         &shade_name,
         &shade_path,
         &config.docker,
         &config.env,
         &config.keychain_prefix,
+        vcs.as_ref(),
     )
 }
 
@@ -304,6 +312,12 @@ fn main() -> Result<()> {
             if !status.success() {
                 anyhow::bail!("editor exited with {status}");
             }
+        }
+        Command::Config(ConfigCommand::Generate) => {
+            print!("{}", config::Config::generate_default());
+        }
+        Command::Config(ConfigCommand::Path) => {
+            println!("{}", config::Config::default_path().display());
         }
         Command::Keychain(ref cmd) => {
             let config = config::Config::load()?;
@@ -383,15 +397,14 @@ fn main() -> Result<()> {
         Command::Docker(DockerCommand::Build) => {
             let config = config::Config::load()?;
             let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
-            let install_jj = config.link_mode == LinkMode::Workspace;
+            let vcs = vcs::create_vcs(config.vcs_kind);
             docker::build_image(&docker::BuildImageOptions {
                 base_image: &config.docker.image,
-                system_setup: config.docker.system_setup.as_deref(),
-                user_setup: config.docker.user_setup.as_deref(),
+                base_image_setup: config.docker.base_image_setup.as_deref(),
                 multiplexer: config.docker.multiplexer.as_ref(),
                 env: &resolved,
                 limits: &config.docker.limits,
-                install_jj,
+                vcs: vcs.as_ref(),
                 user: config.docker.user.as_deref(),
             })?;
         }
@@ -420,56 +433,68 @@ fn main() -> Result<()> {
                 config.link_mode
             };
 
-            // Workspace mode requires Docker
-            if link_mode == LinkMode::Workspace && config.docker == DockerConfig::default() {
-                anyhow::bail!(
-                    "workspace mode requires Docker configuration. Use --clone for non-Docker shades"
-                );
-            }
-
-            let vcs = JjVcs;
+            let vcs = vcs::create_vcs(config.vcs_kind);
             let delete_handler =
                 |environment: &env::Environment| -> Result<()> { delete_shade(environment) };
 
             match tui::run_tui(&config, delete_handler)? {
                 tui::TuiResult::Selected(environment) => {
                     if repos {
-                        let workspace_repos =
-                            select_and_link_repos(&vcs, &config, &environment.path, link_mode)?;
+                        let workspace_repos = select_and_link_repos(
+                            vcs.as_ref(),
+                            &config,
+                            &environment.path,
+                            link_mode,
+                        )?;
                         if !workspace_repos.is_empty() {
                             let mut shade_cfg = shade_config::ShadeConfig::load(&environment.path)?;
                             shade_cfg.label = Some(environment.label.clone());
                             shade_cfg.workspace_repos = workspace_repos.clone();
                             shade_cfg.save(&environment.path)?;
                         }
-                        let repo_names = env::list_workspace_dirs(&environment.path);
-                        write_agent_docs(&environment.path, &repo_names, &workspace_repos)?;
+                        let repo_names = vcs::list_repo_dirs(&environment.path);
+                        write_agent_docs(
+                            &environment.path,
+                            &repo_names,
+                            &workspace_repos,
+                            vcs.name(),
+                        )?;
                     }
                     println!("{}", environment.path.display());
                 }
                 tui::TuiResult::Create(label) => {
                     let environment = env::create_environment(&config.env_dir, &label)?;
 
+                    if config.init_repo {
+                        vcs.init_repo(&environment.path)?;
+                    }
+
                     let mut workspace_repos = Vec::new();
                     if !skip_repos {
-                        workspace_repos =
-                            select_and_link_repos(&vcs, &config, &environment.path, link_mode)?;
+                        workspace_repos = select_and_link_repos(
+                            vcs.as_ref(),
+                            &config,
+                            &environment.path,
+                            link_mode,
+                        )?;
                     }
 
                     let shade_cfg = shade_config::ShadeConfig {
                         env: config.env.clone(),
+                        vcs: config.vcs_kind,
                         label: if workspace_repos.is_empty() {
                             None
                         } else {
                             Some(label.clone())
                         },
+                        shade_setup: config.default_shade_setup.clone(),
                         workspace_repos: workspace_repos.clone(),
                         ..Default::default()
                     };
                     shade_cfg.save(&environment.path)?;
 
-                    let repo_names: Vec<String> = env::list_workspace_dirs(&environment.path);
-                    write_agent_docs(&environment.path, &repo_names, &workspace_repos)?;
+                    let repo_names: Vec<String> = vcs::list_repo_dirs(&environment.path);
+                    write_agent_docs(&environment.path, &repo_names, &workspace_repos, vcs.name())?;
 
                     println!("{}", environment.path.display());
                 }

@@ -2,83 +2,32 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
-use super::{Repo, Vcs};
+use super::{Repo, Vcs, discover_repos_by_marker};
 
 pub struct JjVcs;
 
 impl Vcs for JjVcs {
-    fn discover_repos(&self, dirs: &[String]) -> Result<Vec<Repo>> {
-        let mut repos = Vec::new();
-        for dir in dirs {
-            let dir_path = Path::new(dir);
-            if !dir_path.is_dir() {
-                continue;
-            }
-            let entries = std::fs::read_dir(dir_path)
-                .with_context(|| format!("failed to read directory: {}", dir))?;
-            for entry in entries {
-                let entry = entry?;
-                if !entry.file_type()?.is_dir() {
-                    continue;
-                }
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_string();
-                if path.join(".jj").is_dir() {
-                    repos.push(Repo { name, path });
-                } else {
-                    // Scan one level deeper for grouped repos (e.g. acme/core)
-                    let Ok(sub_entries) = std::fs::read_dir(&path) else {
-                        continue;
-                    };
-                    for sub_entry in sub_entries {
-                        let Ok(sub_entry) = sub_entry else {
-                            continue;
-                        };
-                        if !sub_entry.file_type().is_ok_and(|t| t.is_dir()) {
-                            continue;
-                        }
-                        let sub_path = sub_entry.path();
-                        if sub_path.join(".jj").is_dir() {
-                            let sub_name =
-                                format!("{}/{}", name, sub_entry.file_name().to_string_lossy());
-                            repos.push(Repo {
-                                name: sub_name,
-                                path: sub_path,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        repos.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(repos)
+    fn repo_marker(&self) -> &str {
+        ".jj"
     }
 
-    fn create_workspace(&self, repo: &Repo, target: &Path, workspace_name: &str) -> Result<()> {
-        let target_path = target.join(&repo.name);
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
-        }
-        let output = Command::new("jj")
-            .args([
-                "workspace",
-                "add",
-                "--name",
-                workspace_name,
-                &target_path.to_string_lossy(),
-            ])
-            .current_dir(&repo.path)
-            .output()
-            .context("failed to run jj workspace add")?;
+    fn name(&self) -> &str {
+        "jj"
+    }
 
+    fn discover_repos(&self, dirs: &[String]) -> Result<Vec<Repo>> {
+        discover_repos_by_marker(dirs, self.repo_marker())
+    }
+
+    fn init_repo(&self, path: &Path) -> Result<()> {
+        let output = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(path)
+            .output()
+            .context("failed to run jj git init")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "jj workspace add failed for {}: {}",
-                repo.name,
-                stderr.trim()
-            );
+            anyhow::bail!("jj git init failed: {}", stderr.trim());
         }
         Ok(())
     }
@@ -123,6 +72,23 @@ impl Vcs for JjVcs {
         }
         Ok(())
     }
+
+    fn install_cmd(&self) -> &str {
+        "cargo-binstall -y --install-path /usr/local/bin jj-cli"
+    }
+
+    fn container_workspace_cmd(
+        &self,
+        repo_path: &str,
+        workspace_path: &str,
+        workspace_name: &str,
+    ) -> String {
+        format!("cd {repo_path} && jj workspace add --name {workspace_name} {workspace_path}")
+    }
+
+    fn container_workspace_exists_check(&self, workspace_path: &str) -> String {
+        format!("[ -d {workspace_path}/.jj ]")
+    }
 }
 
 #[cfg(test)]
@@ -135,12 +101,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let code_dir = tmp.path();
 
-        // Create some fake repos
         std::fs::create_dir_all(code_dir.join("repo-a/.jj")).unwrap();
         std::fs::create_dir_all(code_dir.join("repo-b/.jj")).unwrap();
-        // Not a jj repo
         std::fs::create_dir_all(code_dir.join("not-a-repo")).unwrap();
-        // A file, not a directory
         std::fs::write(code_dir.join("some-file"), "").unwrap();
 
         let vcs = JjVcs;
@@ -157,12 +120,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let code_dir = tmp.path();
 
-        // Top-level repo
         std::fs::create_dir_all(code_dir.join("standalone/.jj")).unwrap();
-        // Grouped repos under a subdirectory
         std::fs::create_dir_all(code_dir.join("acme/core/.jj")).unwrap();
         std::fs::create_dir_all(code_dir.join("acme/dashboard/.jj")).unwrap();
-        // Non-repo subdirectory inside a group
         std::fs::create_dir_all(code_dir.join("acme/docs")).unwrap();
 
         let vcs = JjVcs;
@@ -189,7 +149,6 @@ mod tests {
         let source_dir = tmp.path().join("source");
         let target_dir = tmp.path().join("target");
 
-        // Create a real jj repo as the source
         std::fs::create_dir_all(&source_dir).unwrap();
         let init = Command::new("jj")
             .args(["git", "init"])
@@ -208,7 +167,6 @@ mod tests {
 
         let cloned = target_dir.join("my-repo");
         assert!(cloned.exists(), "clone directory should exist");
-        // A clone's .jj/repo is a directory, not a file
         assert!(
             cloned.join(".jj/repo").is_dir(),
             ".jj/repo should be a directory (independent clone)"
@@ -232,8 +190,32 @@ mod tests {
         let repos = vcs.discover_repos(&dirs).unwrap();
 
         assert_eq!(repos.len(), 2);
-        // Sorted alphabetically
         assert_eq!(repos[0].name, "repo-x");
         assert_eq!(repos[1].name, "repo-y");
+    }
+
+    #[test]
+    fn test_init_repo() {
+        let tmp = TempDir::new().unwrap();
+        let vcs = JjVcs;
+        vcs.init_repo(tmp.path()).unwrap();
+        assert!(tmp.path().join(".jj").is_dir());
+    }
+
+    #[test]
+    fn test_container_workspace_cmd() {
+        let vcs = JjVcs;
+        let cmd = vcs.container_workspace_cmd("/repos/core", "/workspace/core", "my-feature");
+        assert_eq!(
+            cmd,
+            "cd /repos/core && jj workspace add --name my-feature /workspace/core"
+        );
+    }
+
+    #[test]
+    fn test_container_workspace_exists_check() {
+        let vcs = JjVcs;
+        let check = vcs.container_workspace_exists_check("/workspace/core");
+        assert_eq!(check, "[ -d /workspace/core/.jj ]");
     }
 }

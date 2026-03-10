@@ -6,14 +6,15 @@ use std::path::Path;
 
 use crate::container::DockerConfigOverride;
 use crate::env_vars::EnvValue;
+use crate::vcs::VcsKind;
 
 const FILENAME: &str = "shade.toml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LinkedRepo {
     pub name: String,
-    /// Absolute host path to the clone in the shade dir.
-    pub host_path: String,
+    /// Absolute host path to the primary repo (source for workspace creation).
+    pub primary_repo_path: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -23,7 +24,11 @@ pub struct ShadeConfig {
     #[serde(default)]
     pub docker: DockerConfigOverride,
     #[serde(default)]
+    pub vcs: VcsKind,
+    #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub shade_setup: Option<String>,
     #[serde(default)]
     pub workspace_repos: Vec<LinkedRepo>,
 }
@@ -103,11 +108,11 @@ mod tests {
             workspace_repos: vec![
                 LinkedRepo {
                     name: "core".to_string(),
-                    host_path: "/home/user/Shades/2026-03-09-test/core".to_string(),
+                    primary_repo_path: "/home/user/Code/core".to_string(),
                 },
                 LinkedRepo {
                     name: "acme/dashboard".to_string(),
-                    host_path: "/home/user/Shades/2026-03-09-test/acme/dashboard".to_string(),
+                    primary_repo_path: "/home/user/Code/acme/dashboard".to_string(),
                 },
             ],
             ..Default::default()
@@ -117,5 +122,24 @@ mod tests {
         let loaded = ShadeConfig::load(tmp.path()).unwrap();
         assert_eq!(loaded.label.as_deref(), Some("my-feature"));
         assert_eq!(loaded.workspace_repos, config.workspace_repos);
+    }
+
+    #[test]
+    fn test_vcs_defaults_to_jj() {
+        let config = ShadeConfig::default();
+        assert_eq!(config.vcs, VcsKind::Jj);
+    }
+
+    #[test]
+    fn test_shade_setup_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let config = ShadeConfig {
+            shade_setup: Some("npm install".to_string()),
+            ..Default::default()
+        };
+        config.save(tmp.path()).unwrap();
+
+        let loaded = ShadeConfig::load(tmp.path()).unwrap();
+        assert_eq!(loaded.shade_setup.as_deref(), Some("npm install"));
     }
 }

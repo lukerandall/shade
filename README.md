@@ -1,17 +1,24 @@
 # Shade
 
-Ephemeral development environments powered by [Jujutsu](https://github.com/jj-vcs/jj)
-workspaces. Quickly create isolated, labelled sandboxes
-with linked repos and optional Docker containers for
-safe agent-driven development.
+Ephemeral development environments for safe agent-driven
+development. Quickly create isolated, labelled sandboxes
+with linked repos and optional Docker containers.
 
 ## How it works
 
 Each shade is a dated, named directory (e.g. `2026-03-07-my-feature`) under a
-configurable root. When you create a shade, you pick which of your repos to link
-into it — Shade creates Jujutsu workspaces so each shade gets its own working
-copy without cloning. Optionally, you can spin up a Docker container scoped to
-the shade with your tools, secrets, and repos mounted in.
+configurable root. When you create a shade, Shade scans your `code_dirs` for
+repositories and presents an interactive picker so you can choose which repos to
+link into the shade. If no `code_dirs` are configured or no repositories are
+found, this step is skipped. Shade supports two version control systems:
+
+- **[Jujutsu](https://github.com/jj-vcs/jj)** (default) — links repos via jj workspaces
+- **Git** — links repos via git worktrees
+
+In both cases, each shade gets its own working copy without a full clone. Shades
+are useful on their own as lightweight, disposable workspaces. For stronger
+isolation, you can optionally spin up a Docker container scoped to the shade with
+your tools, secrets, and repos mounted in — but Docker is not required.
 
 ## Quick start
 
@@ -39,6 +46,8 @@ s docker rm           # Remove the shade's Docker container
 
 s config new          # Generate a default config file
 s config edit         # Open the config in $EDITOR
+s config generate     # Print a default config to stdout
+s config path         # Print the config file path
 
 s keychain set <name> # Store a secret
 s keychain get <name> # Retrieve a secret
@@ -54,17 +63,32 @@ env_dir = "~/Shades"
 code_dirs = ["~/Code"]
 keychain_prefix = "shade."
 
+# Version control system: "jj" (Jujutsu) or "git".
+# vcs = "jj"
+
+# How repos are linked: "workspace" or "clone".
+# link_mode = "workspace"
+
 [env]
 GH_TOKEN = { keychain = "gh-token" }
 
 [docker]
 image = "ubuntu:latest"
-mounts = ["~/.config:/root/.config"]
-setup = "apt-get update && apt-get install -y ripgrep curl"
+mounts = ["~/.config:~/.config"]
+base_image_setup = "apt-get update && apt-get install -y ripgrep curl"
 ```
 
 Per-shade overrides can be placed in `shade.toml` inside the shade directory to
 customize the Docker image, mounts, or environment for a specific shade.
+
+### Version control
+
+By default, Shade uses **Jujutsu** (jj) workspaces to link repos. Set `vcs = "git"`
+to use git worktrees instead. The `link_mode` controls how repos are linked:
+
+- `"workspace"` (default) — shared history, lightweight. Changes in any workspace
+  are visible in the primary repo.
+- `"clone"` — independent copy, safer for untrusted agents.
 
 ## Secrets / Keychain
 

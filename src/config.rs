@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::container::DockerConfig;
 use crate::env_vars::EnvValue;
-use crate::vcs::LinkMode;
+use crate::vcs::{LinkMode, VcsKind};
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -18,32 +18,33 @@ pub enum ConfigError {
     Read(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct JjConfig {
-    pub link_mode: Option<LinkMode>,
-}
-
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     env_dir: Option<String>,
     code_dirs: Option<Vec<String>>,
+    vcs: Option<VcsKind>,
+    link_mode: Option<LinkMode>,
+    #[serde(default)]
+    init_repo: bool,
+    default_shade_setup: Option<String>,
     keychain_prefix: Option<String>,
     #[serde(default)]
     env: HashMap<String, EnvValue>,
     #[serde(default)]
     docker: DockerConfig,
-    #[serde(default)]
-    jj: JjConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub env_dir: String,
     pub code_dirs: Vec<String>,
+    pub vcs_kind: VcsKind,
+    pub link_mode: LinkMode,
+    pub init_repo: bool,
+    pub default_shade_setup: Option<String>,
     pub keychain_prefix: String,
     pub env: HashMap<String, EnvValue>,
     pub docker: DockerConfig,
-    pub link_mode: LinkMode,
 }
 
 impl Config {
@@ -95,19 +96,28 @@ impl Config {
             .unwrap_or_else(Self::default_keychain_prefix);
 
         let docker = DockerConfig {
-            mounts: raw.docker.mounts.iter().map(|m| expand_tilde(m)).collect(),
+            mounts: raw
+                .docker
+                .mounts
+                .iter()
+                .map(|m| expand_tilde_mount_source(m))
+                .collect(),
             ..raw.docker
         };
 
-        let link_mode = raw.jj.link_mode.unwrap_or_default();
+        let vcs_kind = raw.vcs.unwrap_or_default();
+        let link_mode = raw.link_mode.unwrap_or_default();
 
         Ok(Config {
             env_dir,
             code_dirs,
+            vcs_kind,
+            link_mode,
+            init_repo: raw.init_repo,
+            default_shade_setup: raw.default_shade_setup,
             keychain_prefix,
             env: raw.env,
             docker,
-            link_mode,
         })
     }
 
@@ -115,10 +125,13 @@ impl Config {
         Config {
             env_dir: Self::default_env_dir(),
             code_dirs: Self::default_code_dirs(),
+            vcs_kind: VcsKind::default(),
+            link_mode: LinkMode::default(),
+            init_repo: false,
+            default_shade_setup: None,
             keychain_prefix: Self::default_keychain_prefix(),
             env: HashMap::new(),
             docker: DockerConfig::default(),
-            link_mode: LinkMode::default(),
         }
     }
 
@@ -127,16 +140,34 @@ impl Config {
     }
 
     const DEFAULT_ENV_DIR: &str = "~/Shades";
-    const DEFAULT_CODE_DIRS: &[&str] = &["~/Code"];
+    const DEFAULT_CODE_DIRS: &[&str] = &[];
 
     /// Generate a default config file as a TOML string with human-friendly paths.
     pub fn generate_default() -> String {
         format!(
-            r#"# Directory where shade environments are created.
+            r##"# Directory where shade environments are created.
 env_dir = "{env_dir}"
 
-# Directories scanned for jj repositories when creating a shade.
-code_dirs = ["{code_dir}"]
+# Directories to scan for repositories when creating a shade. Discovered repos
+# are listed in an interactive picker so you can link them into the new shade.
+# If empty or unset, the repo selection step is skipped entirely.
+# code_dirs = ["~/Code"]
+
+# Version control system: "jj" (Jujutsu) or "git".
+# vcs = "jj"
+
+# How repos are linked into shades: "workspace" (shared history, lightweight)
+# or "clone" (independent copy, safer for untrusted agents).
+# link_mode = "workspace"
+
+# Initialize a new repo in each shade directory on creation.
+# init_repo = false
+
+# Default shade_setup command copied into new shade.toml files.
+# Runs as the configured user at container start; re-runs when changed.
+# default_shade_setup = """
+#   curl -fsSL https://example.com/install.sh | bash
+# """
 
 # Prefix applied to keychain service names (e.g. "shade.my-token").
 keychain_prefix = "{keychain_prefix}"
@@ -151,21 +182,24 @@ keychain_prefix = "{keychain_prefix}"
 # Base Docker image.
 image = "ubuntu:latest"
 
-# Shell command to run inside the container once on first start.
-# The command is re-run if it changes (content-hashed).
-# setup = "apt-get update && apt-get install -y ripgrep"
-
 # Run the container as this user.
 # user = "dev"
 
 # Terminal multiplexer to install and use ("zellij" or "tmux").
 # multiplexer = "zellij"
 
+# Shell command baked into the Docker image during `shade docker build`.
+# Runs as root. Rebuild with `shade docker build` after changing.
+# base_image_setup = "apt-get update && apt-get install -y ripgrep"
+
 # Extra directories to prepend to PATH inside the container.
 # path = ["/home/dev/.cargo/bin"]
 
 # Additional host paths to mount into the container.
-# mounts = ["/host/path:/container/path", "~/.ssh"]
+# Use "source:target" for explicit mapping. Tilde (~) in sources expands
+# to the host user's home directory; in targets it expands to the container
+# user's home directory.
+# mounts = ["~/.ssh", "~/.config:~/.config"]
 
 # [docker.limits]
 # memory    = "4g"
@@ -174,14 +208,8 @@ image = "ubuntu:latest"
 # cap_drop  = ["ALL"]
 # cap_add   = ["SETUID", "SETGID"]
 # no_new_privileges = true
-
-[jj]
-# How repos are linked into shades: "workspace" (shared history, lightweight)
-# or "clone" (independent copy, safer for untrusted agents).
-# link_mode = "workspace"
-"#,
+"##,
             env_dir = Self::DEFAULT_ENV_DIR,
-            code_dir = Self::DEFAULT_CODE_DIRS[0],
             keychain_prefix = Self::default_keychain_prefix(),
         )
     }
@@ -223,6 +251,18 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Expand tilde only in the source (host) side of a mount spec.
+/// For "source:target" mounts, only the source is expanded here;
+/// the target is expanded at container creation time using the container
+/// user's home directory.
+fn expand_tilde_mount_source(mount: &str) -> String {
+    if let Some((src, tgt)) = mount.split_once(':') {
+        format!("{}:{}", expand_tilde(src), tgt)
+    } else {
+        expand_tilde(mount)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,10 +278,7 @@ mod tests {
 
         let home = dirs::home_dir().unwrap();
         assert_eq!(config.env_dir, home.join("Shades").to_string_lossy());
-        assert_eq!(
-            config.code_dirs,
-            vec![home.join("Code").to_string_lossy().to_string()]
-        );
+        assert!(config.code_dirs.is_empty());
     }
 
     #[test]
@@ -285,17 +322,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
 
-        // Empty but valid TOML — all fields should get defaults
         fs::write(&config_path, "").unwrap();
 
         let config = Config::load_from(&config_path).unwrap();
 
         let home = dirs::home_dir().unwrap();
         assert_eq!(config.env_dir, home.join("Shades").to_string_lossy());
-        assert_eq!(
-            config.code_dirs,
-            vec![home.join("Code").to_string_lossy().to_string()]
-        );
+        assert!(config.code_dirs.is_empty());
     }
 
     #[test]
@@ -314,9 +347,21 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
 
-        fs::write(&config_path, "[jj]\nlink_mode = \"clone\"\n").unwrap();
+        fs::write(&config_path, "link_mode = \"clone\"\n").unwrap();
 
         let config = Config::load_from(&config_path).unwrap();
+        assert_eq!(config.link_mode, LinkMode::Clone);
+    }
+
+    #[test]
+    fn test_vcs_git_with_clone() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        fs::write(&config_path, "vcs = \"git\"\nlink_mode = \"clone\"\n").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert_eq!(config.vcs_kind, VcsKind::Git);
         assert_eq!(config.link_mode, LinkMode::Clone);
     }
 
@@ -334,6 +379,64 @@ mod tests {
         assert_eq!(
             config.code_dirs[1],
             home.join("work").to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
+    fn test_init_repo_defaults_to_false() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert!(!config.init_repo);
+    }
+
+    #[test]
+    fn test_init_repo_enabled() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "init_repo = true\n").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert!(config.init_repo);
+    }
+
+    #[test]
+    fn test_mount_tilde_expands_source_only() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[docker]\nmounts = [\"~/.claude.json:~/.claude.json\"]\n",
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        let home = dirs::home_dir().unwrap();
+        let mount = &config.docker.mounts[0];
+        let (src, tgt) = mount.split_once(':').unwrap();
+        // Source should be expanded
+        assert!(src.starts_with(home.to_str().unwrap()));
+        assert!(src.ends_with(".claude.json"));
+        // Target should NOT be expanded (still has tilde)
+        assert_eq!(tgt, "~/.claude.json");
+    }
+
+    #[test]
+    fn test_default_shade_setup() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "default_shade_setup = \"curl -fsSL https://example.com | bash\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert_eq!(
+            config.default_shade_setup.as_deref(),
+            Some("curl -fsSL https://example.com | bash")
         );
     }
 }
