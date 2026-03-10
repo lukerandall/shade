@@ -500,7 +500,7 @@ pub fn build_image(
     if install_jj {
         println!("Including jj in image...");
         steps.push(
-            "curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && cargo-binstall -y --install-path /usr/local/bin jj-cli".to_string(),
+            "apt-get update -qq && apt-get install -y -qq curl >/dev/null && curl -fsSL https://github.com/cargo-bins/cargo-binstall/raw/main/install-from-binstall-release.sh | bash && cargo-binstall -y --install-path /usr/local/bin jj-cli".to_string(),
         );
     }
     if let Some(mux_kind) = multiplexer {
