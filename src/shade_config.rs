@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::container::DockerConfigOverride;
 use crate::env_vars::EnvValue;
-use crate::vcs::VcsKind;
+use crate::vcs::{LinkMode, VcsKind};
 
 const FILENAME: &str = "shade.toml";
 
@@ -26,11 +26,13 @@ pub struct ShadeConfig {
     #[serde(default)]
     pub vcs: VcsKind,
     #[serde(default)]
+    pub link_mode: LinkMode,
+    #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
     pub shade_setup: Option<String>,
     #[serde(default)]
-    pub workspace_repos: Vec<LinkedRepo>,
+    pub repos: Vec<LinkedRepo>,
 }
 
 impl ShadeConfig {
@@ -105,7 +107,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = ShadeConfig {
             label: Some("my-feature".to_string()),
-            workspace_repos: vec![
+            repos: vec![
                 LinkedRepo {
                     name: "core".to_string(),
                     primary_repo_path: "/home/user/Code/core".to_string(),
@@ -121,7 +123,7 @@ mod tests {
 
         let loaded = ShadeConfig::load(tmp.path()).unwrap();
         assert_eq!(loaded.label.as_deref(), Some("my-feature"));
-        assert_eq!(loaded.workspace_repos, config.workspace_repos);
+        assert_eq!(loaded.repos, config.repos);
     }
 
     #[test]

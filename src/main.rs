@@ -124,8 +124,8 @@ enum Command {
     Keychain(KeychainCommand),
 }
 
-/// Only records workspace repos in the shade config (workspace creation happens
-/// inside the container). For clone mode, clones repos into the shade dir.
+/// Link or clone selected repos into the shade directory.
+/// Returns the list of linked repos (saved to shade.toml).
 fn select_and_link_repos(
     vcs: &dyn vcs::Vcs,
     config: &config::Config,
@@ -146,24 +146,39 @@ fn select_and_link_repos(
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
-    let mut workspace_repos = Vec::new();
+    let mut linked_repos = Vec::new();
 
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
             for repo in &selected {
                 match link_mode {
-                    LinkMode::Workspace => {
-                        // Don't clone on host — workspace is created inside container
-                        workspace_repos.push(shade_config::LinkedRepo {
-                            name: repo.name.clone(),
-                            primary_repo_path: repo.path.to_string_lossy().to_string(),
-                        });
-                        println!("Linked {} (workspace)", repo.name);
+                    LinkMode::Link => {
+                        print!("Linking {}... ", repo.name);
+                        let link_path = env_path.join(&repo.name);
+                        if let Some(parent) = link_path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        match std::os::unix::fs::symlink(&repo.path, &link_path) {
+                            Ok(()) => {
+                                println!("done");
+                                linked_repos.push(shade_config::LinkedRepo {
+                                    name: repo.name.clone(),
+                                    primary_repo_path: repo.path.to_string_lossy().to_string(),
+                                });
+                            }
+                            Err(e) => println!("failed: {}", e),
+                        }
                     }
                     LinkMode::Clone => {
                         print!("Cloning {}... ", repo.name);
                         match vcs.clone_repo(repo, env_path) {
-                            Ok(()) => println!("done"),
+                            Ok(()) => {
+                                println!("done");
+                                linked_repos.push(shade_config::LinkedRepo {
+                                    name: repo.name.clone(),
+                                    primary_repo_path: repo.path.to_string_lossy().to_string(),
+                                });
+                            }
                             Err(e) => println!("failed: {}", e),
                         }
                     }
@@ -172,7 +187,7 @@ fn select_and_link_repos(
         }
         repo_select::RepoSelectResult::Cancelled => {}
     }
-    Ok(workspace_repos)
+    Ok(linked_repos)
 }
 
 /// Write CLAUDE.md and AGENTS.md into the shade directory so they are visible
@@ -180,12 +195,12 @@ fn select_and_link_repos(
 fn write_agent_docs(
     shade_path: &std::path::Path,
     repo_names: &[String],
-    workspace_repos: &[shade_config::LinkedRepo],
+    repos: &[shade_config::LinkedRepo],
     vcs_name: &str,
 ) -> Result<()> {
     std::fs::write(shade_path.join("CLAUDE.md"), "@AGENTS.md\n")?;
 
-    let has_workspaces = !workspace_repos.is_empty();
+    let has_workspaces = !repos.is_empty();
     let mut doc = String::from("# Shade Environment\n\n");
 
     doc.push_str("## Directory Layout\n\n");
@@ -203,7 +218,7 @@ fn write_agent_docs(
     if !repo_names.is_empty() {
         doc.push_str("\n## Repos\n\n");
         for name in repo_names {
-            let is_ws = workspace_repos.iter().any(|r| r.name == *name);
+            let is_ws = repos.iter().any(|r| r.name == *name);
             if has_workspaces && is_ws {
                 doc.push_str(&format!(
                     "- `{name}` — {vcs_name} workspace at `/workspace/{name}` (clone at `/repos/{name}`)\n"
@@ -440,23 +455,24 @@ fn main() -> Result<()> {
             match tui::run_tui(&config, delete_handler)? {
                 tui::TuiResult::Selected(environment) => {
                     if repos {
-                        let workspace_repos = select_and_link_repos(
+                        let linked_repos = select_and_link_repos(
                             vcs.as_ref(),
                             &config,
                             &environment.path,
                             link_mode,
                         )?;
-                        if !workspace_repos.is_empty() {
+                        if !linked_repos.is_empty() {
                             let mut shade_cfg = shade_config::ShadeConfig::load(&environment.path)?;
                             shade_cfg.label = Some(environment.label.clone());
-                            shade_cfg.workspace_repos = workspace_repos.clone();
+                            shade_cfg.link_mode = link_mode;
+                            shade_cfg.repos = linked_repos.clone();
                             shade_cfg.save(&environment.path)?;
                         }
                         let repo_names = vcs::list_repo_dirs(&environment.path);
                         write_agent_docs(
                             &environment.path,
                             &repo_names,
-                            &workspace_repos,
+                            &linked_repos,
                             vcs.name(),
                         )?;
                     }
@@ -469,9 +485,9 @@ fn main() -> Result<()> {
                         vcs.init_repo(&environment.path)?;
                     }
 
-                    let mut workspace_repos = Vec::new();
+                    let mut linked_repos = Vec::new();
                     if !skip_repos {
-                        workspace_repos = select_and_link_repos(
+                        linked_repos = select_and_link_repos(
                             vcs.as_ref(),
                             &config,
                             &environment.path,
@@ -482,19 +498,20 @@ fn main() -> Result<()> {
                     let shade_cfg = shade_config::ShadeConfig {
                         env: config.env.clone(),
                         vcs: config.vcs_kind,
-                        label: if workspace_repos.is_empty() {
+                        link_mode,
+                        label: if linked_repos.is_empty() {
                             None
                         } else {
                             Some(label.clone())
                         },
                         shade_setup: config.default_shade_setup.clone(),
-                        workspace_repos: workspace_repos.clone(),
+                        repos: linked_repos.clone(),
                         ..Default::default()
                     };
                     shade_cfg.save(&environment.path)?;
 
                     let repo_names: Vec<String> = vcs::list_repo_dirs(&environment.path);
-                    write_agent_docs(&environment.path, &repo_names, &workspace_repos, vcs.name())?;
+                    write_agent_docs(&environment.path, &repo_names, &linked_repos, vcs.name())?;
 
                     println!("{}", environment.path.display());
                 }

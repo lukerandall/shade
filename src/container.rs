@@ -2,6 +2,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::multiplexer::MultiplexerKind;
 
+/// How repos are set up inside the Docker container.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepoMode {
+    /// Create a VCS workspace/worktree inside the container from the primary repo.
+    #[default]
+    Workspace,
+    /// Mount the repo directly into the container.
+    Direct,
+}
+
 fn default_image() -> String {
     "ubuntu:latest".to_string()
 }
@@ -43,6 +54,9 @@ pub struct DockerConfig {
     pub shade_setup: Option<String>,
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
+    /// How repos are set up inside the container: "workspace" (default) or "direct".
+    #[serde(default)]
+    pub repo_mode: RepoMode,
     #[serde(default)]
     pub path: Vec<String>,
     #[serde(default)]
@@ -59,6 +73,7 @@ impl Default for DockerConfig {
             shade_setup: None,
             user: None,
             multiplexer: None,
+            repo_mode: RepoMode::default(),
             path: Vec::new(),
             mounts: Vec::new(),
             limits: ContainerLimits::default(),
@@ -74,6 +89,7 @@ pub struct DockerConfigOverride {
     pub shade_setup: Option<String>,
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
+    pub repo_mode: Option<RepoMode>,
     pub path: Option<Vec<String>>,
     pub mounts: Option<Vec<String>>,
     #[serde(default)]
@@ -100,6 +116,7 @@ impl DockerConfig {
                 .multiplexer
                 .clone()
                 .or_else(|| self.multiplexer.clone()),
+            repo_mode: overrides.repo_mode.unwrap_or(self.repo_mode),
             path: overrides.path.clone().unwrap_or_else(|| self.path.clone()),
             mounts: overrides
                 .mounts

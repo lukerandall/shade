@@ -14,13 +14,13 @@ pub enum VcsKind {
     Git,
 }
 
-/// How repos are linked into shades.
+/// How repos are placed in the shade directory on the host.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LinkMode {
-    /// Shared history via workspace (lightweight, but mutates primary repo).
+    /// Symlink to the original repo (lightweight, default).
     #[default]
-    Workspace,
+    Link,
     /// Independent clone (safer for untrusted agents).
     Clone,
 }

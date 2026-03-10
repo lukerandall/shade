@@ -12,11 +12,11 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-use crate::container::{ContainerLimits, DockerConfig};
+use crate::container::{ContainerLimits, DockerConfig, RepoMode};
 use crate::env_vars::{self, EnvValue};
 use crate::multiplexer::MultiplexerKind;
 use crate::shade_config::{LinkedRepo, ShadeConfig};
-use crate::vcs::Vcs;
+use crate::vcs::{LinkMode, Vcs};
 
 /// Check whether a container with the given name exists and its state.
 enum ContainerState {
@@ -64,19 +64,47 @@ fn expand_tilde_container(path: &str, user: Option<&str>) -> String {
 
 /// Build volume mount arguments for docker run.
 ///
-/// Always mounts the shade directory at `/workspace`. For workspace-mode repos,
-/// also mounts each primary repo at `/repos/{name}`.
-fn volume_args(shade_path: &Path, workspace_repos: &[LinkedRepo]) -> Vec<String> {
+/// Always mounts the shade directory at `/workspace`.
+///
+/// - **Workspace mode**: additionally mounts each repo's `primary_repo_path` at
+///   `/repos/{name}` so the container can create a workspace/worktree from it.
+/// - **Direct mode**: for symlinked repos (`link_mode == Link`), overlay-mounts
+///   each repo's `primary_repo_path` at `/workspace/{name}` since host symlinks
+///   won't resolve inside the container. Cloned repos are already visible via
+///   the shade mount.
+fn volume_args(
+    shade_path: &Path,
+    repos: &[LinkedRepo],
+    repo_mode: RepoMode,
+    link_mode: LinkMode,
+) -> Vec<String> {
     let mut args = Vec::new();
 
     // Always mount the shade dir at /workspace
     args.push("-v".to_string());
     args.push(format!("{}:/workspace", shade_path.display()));
 
-    // Mount each primary repo at /repos/{name}
-    for repo in workspace_repos {
-        args.push("-v".to_string());
-        args.push(format!("{}:/repos/{}", repo.primary_repo_path, repo.name));
+    match repo_mode {
+        RepoMode::Workspace => {
+            // Mount each primary repo at /repos/{name} for workspace creation
+            for repo in repos {
+                args.push("-v".to_string());
+                args.push(format!("{}:/repos/{}", repo.primary_repo_path, repo.name));
+            }
+        }
+        RepoMode::Direct => {
+            if link_mode == LinkMode::Link {
+                // Symlinks won't resolve in container; overlay-mount the targets
+                for repo in repos {
+                    args.push("-v".to_string());
+                    args.push(format!(
+                        "{}:/workspace/{}",
+                        repo.primary_repo_path, repo.name
+                    ));
+                }
+            }
+            // Clone mode: repos are subdirs of shade, already visible via shade mount
+        }
     }
 
     args
@@ -113,8 +141,10 @@ pub fn run_docker(
             }
         }
         ContainerState::NotFound => {
-            let workspace_repos = &shade_config.workspace_repos;
+            let repos = &shade_config.repos;
             let workspace_label = shade_config.label.as_deref().unwrap_or(shade_name);
+            let repo_mode = docker.repo_mode;
+            let link_mode = shade_config.link_mode;
 
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
@@ -126,9 +156,10 @@ pub fn run_docker(
                 user,
             );
 
+            let has_workspace_repos = repo_mode == RepoMode::Workspace && !repos.is_empty();
             let needs_prebuilt = docker.base_image_setup.is_some()
                 || mux.is_some()
-                || !workspace_repos.is_empty()
+                || has_workspace_repos
                 || user.is_some();
             if !has_prebuilt && needs_prebuilt {
                 bail!(
@@ -160,7 +191,9 @@ pub fn run_docker(
             create_and_run(&CreateOptions {
                 name: &name,
                 shade_path,
-                workspace_repos,
+                repos,
+                repo_mode,
+                link_mode,
                 workspace_label,
                 image: &effective_image,
                 env: &resolved,
@@ -220,7 +253,8 @@ fn path_export(paths: &[String]) -> Option<String> {
 
 struct SetupScriptOptions<'a> {
     shade_setup: Option<&'a str>,
-    workspace_repos: &'a [LinkedRepo],
+    repos: &'a [LinkedRepo],
+    repo_mode: RepoMode,
     workspace_label: &'a str,
     vcs: &'a dyn Vcs,
     user: Option<&'a str>,
@@ -249,7 +283,7 @@ fn setup_script(opts: &SetupScriptOptions) -> String {
         parts.push(export);
     }
 
-    if !opts.workspace_repos.is_empty() {
+    if opts.repo_mode == RepoMode::Workspace && !opts.repos.is_empty() {
         // Ensure VCS tool is available before creating workspaces
         let vcs_name = opts.vcs.name();
         parts.push(format!(
@@ -258,13 +292,13 @@ fn setup_script(opts: &SetupScriptOptions) -> String {
 
         // Chown clone and workspace dirs so the configured user can access them
         if let Some(username) = opts.user {
-            for r in opts.workspace_repos {
+            for r in opts.repos {
                 parts.push(format!("chown -R {username} /repos/{}", r.name));
             }
             parts.push(format!("chown {username} /workspace"));
         }
 
-        for r in opts.workspace_repos {
+        for r in opts.repos {
             let exists_check = opts
                 .vcs
                 .container_workspace_exists_check(&format!("/workspace/{}", r.name));
@@ -273,12 +307,16 @@ fn setup_script(opts: &SetupScriptOptions) -> String {
                 &format!("/workspace/{}", r.name),
                 opts.workspace_label,
             );
-            parts.push(format!("if ! {exists_check}; then {create_cmd}; fi"));
+            // Clean up any existing symlink/clone before creating workspace
+            parts.push(format!(
+                "if ! {exists_check}; then rm -rf /workspace/{name} 2>/dev/null; {create_cmd}; fi",
+                name = r.name,
+            ));
         }
 
         // Chown the created workspace dirs too
         if let Some(username) = opts.user {
-            for r in opts.workspace_repos {
+            for r in opts.repos {
                 parts.push(format!("chown -R {username} /workspace/{}", r.name));
             }
         }
@@ -313,7 +351,9 @@ fn setup_script(opts: &SetupScriptOptions) -> String {
 struct CreateOptions<'a> {
     name: &'a str,
     shade_path: &'a Path,
-    workspace_repos: &'a [LinkedRepo],
+    repos: &'a [LinkedRepo],
+    repo_mode: RepoMode,
+    link_mode: LinkMode,
     workspace_label: &'a str,
     image: &'a str,
     env: &'a [(String, String)],
@@ -335,7 +375,7 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
         cmd.args(["run", "-it", "--name", opts.name, "-w", "/workspace"]);
     }
     cmd.args(opts.limits.docker_args());
-    let vol_args = volume_args(opts.shade_path, opts.workspace_repos);
+    let vol_args = volume_args(opts.shade_path, opts.repos, opts.repo_mode, opts.link_mode);
     cmd.args(vol_args);
     for mount in opts.mounts {
         let mount_arg = if let Some((src, tgt)) = mount.split_once(':') {
@@ -351,7 +391,8 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     cmd.arg(opts.image);
     let script = setup_script(&SetupScriptOptions {
         shade_setup: opts.shade_setup,
-        workspace_repos: opts.workspace_repos,
+        repos: opts.repos,
+        repo_mode: opts.repo_mode,
         workspace_label: opts.workspace_label,
         vcs: opts.vcs,
         user: opts.user,
@@ -694,30 +735,30 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_args_no_workspace_repos() {
+    fn test_volume_args_no_repos() {
         let shade = Path::new("/home/user/Shades/2026-03-09-test");
-        let args = volume_args(shade, &[]);
+        let args = volume_args(shade, &[], RepoMode::Workspace, LinkMode::Link);
 
         assert!(args.contains(&format!("{}:/workspace", shade.display())));
         assert_eq!(args.len(), 2); // -v and the mount
     }
 
     #[test]
-    fn test_volume_args_with_workspace_repos() {
+    fn test_volume_args_workspace_mode() {
         let shade = Path::new("/home/user/Shades/2026-03-09-test");
         let repos = vec![LinkedRepo {
             name: "core".to_string(),
             primary_repo_path: "/home/user/Code/core".to_string(),
         }];
 
-        let args = volume_args(shade, &repos);
+        let args = volume_args(shade, &repos, RepoMode::Workspace, LinkMode::Link);
 
         assert!(args.contains(&format!("{}:/workspace", shade.display())));
         assert!(args.contains(&"/home/user/Code/core:/repos/core".to_string()));
     }
 
     #[test]
-    fn test_volume_args_multiple_workspace_repos() {
+    fn test_volume_args_workspace_mode_multiple() {
         let shade = Path::new("/home/user/Shades/2026-03-09-test");
         let repos = vec![
             LinkedRepo {
@@ -730,9 +771,8 @@ mod tests {
             },
         ];
 
-        let args = volume_args(shade, &repos);
+        let args = volume_args(shade, &repos, RepoMode::Workspace, LinkMode::Link);
 
-        // Shade mount should appear exactly once
         let shade_mount = format!("{}:/workspace", shade.display());
         let shade_count = args.iter().filter(|a| **a == shade_mount).count();
         assert_eq!(shade_count, 1);
@@ -742,7 +782,39 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_script_with_jj_workspace_repos() {
+    fn test_volume_args_direct_mode_link() {
+        let shade = Path::new("/home/user/Shades/2026-03-09-test");
+        let repos = vec![LinkedRepo {
+            name: "core".to_string(),
+            primary_repo_path: "/home/user/Code/core".to_string(),
+        }];
+
+        let args = volume_args(shade, &repos, RepoMode::Direct, LinkMode::Link);
+
+        assert!(args.contains(&format!("{}:/workspace", shade.display())));
+        // Symlinked repo should be overlay-mounted
+        assert!(args.contains(&"/home/user/Code/core:/workspace/core".to_string()));
+        // Should NOT have /repos/ mount
+        assert!(!args.iter().any(|a| a.contains("/repos/")));
+    }
+
+    #[test]
+    fn test_volume_args_direct_mode_clone() {
+        let shade = Path::new("/home/user/Shades/2026-03-09-test");
+        let repos = vec![LinkedRepo {
+            name: "core".to_string(),
+            primary_repo_path: "/home/user/Code/core".to_string(),
+        }];
+
+        let args = volume_args(shade, &repos, RepoMode::Direct, LinkMode::Clone);
+
+        assert!(args.contains(&format!("{}:/workspace", shade.display())));
+        // Cloned repos are already in shade dir, no extra mounts
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn test_setup_script_workspace_mode_jj() {
         let vcs = JjVcs;
         let repos = vec![LinkedRepo {
             name: "core".to_string(),
@@ -750,7 +822,8 @@ mod tests {
         }];
         let script = setup_script(&SetupScriptOptions {
             shade_setup: None,
-            workspace_repos: &repos,
+            repos: &repos,
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: None,
@@ -761,11 +834,12 @@ mod tests {
 
         assert!(script.contains("command -v jj"));
         assert!(script.contains("jj workspace add --name feat /workspace/core"));
+        assert!(script.contains("rm -rf /workspace/core"));
         assert!(script.ends_with("exec /bin/bash"));
     }
 
     #[test]
-    fn test_setup_script_with_git_workspace_repos() {
+    fn test_setup_script_workspace_mode_git() {
         let vcs = GitVcs;
         let repos = vec![LinkedRepo {
             name: "core".to_string(),
@@ -773,7 +847,8 @@ mod tests {
         }];
         let script = setup_script(&SetupScriptOptions {
             shade_setup: None,
-            workspace_repos: &repos,
+            repos: &repos,
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: None,
@@ -788,11 +863,37 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_script_without_workspace_repos() {
+    fn test_setup_script_direct_mode_no_workspace_creation() {
+        let vcs = JjVcs;
+        let repos = vec![LinkedRepo {
+            name: "core".to_string(),
+            primary_repo_path: "/home/user/Code/core".to_string(),
+        }];
+        let script = setup_script(&SetupScriptOptions {
+            shade_setup: None,
+            repos: &repos,
+            repo_mode: RepoMode::Direct,
+            workspace_label: "feat",
+            vcs: &vcs,
+            user: None,
+            mux: None,
+            paths: &[],
+            detach: false,
+        });
+
+        // Direct mode should NOT create workspaces
+        assert!(!script.contains("command -v jj"));
+        assert!(!script.contains("workspace add"));
+        assert_eq!(script, "exec /bin/bash");
+    }
+
+    #[test]
+    fn test_setup_script_no_repos() {
         let vcs = JjVcs;
         let script = setup_script(&SetupScriptOptions {
             shade_setup: None,
-            workspace_repos: &[],
+            repos: &[],
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: None,
@@ -810,7 +911,8 @@ mod tests {
         let vcs = JjVcs;
         let script = setup_script(&SetupScriptOptions {
             shade_setup: Some("npm install"),
-            workspace_repos: &[],
+            repos: &[],
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: Some("dev"),
@@ -827,7 +929,8 @@ mod tests {
         let vcs = JjVcs;
         let script = setup_script(&SetupScriptOptions {
             shade_setup: Some("npm install"),
-            workspace_repos: &[],
+            repos: &[],
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: None,
@@ -845,7 +948,8 @@ mod tests {
         let vcs = JjVcs;
         let script = setup_script(&SetupScriptOptions {
             shade_setup: None,
-            workspace_repos: &[],
+            repos: &[],
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: Some("dev"),
@@ -862,7 +966,8 @@ mod tests {
         let vcs = JjVcs;
         let script = setup_script(&SetupScriptOptions {
             shade_setup: None,
-            workspace_repos: &[],
+            repos: &[],
+            repo_mode: RepoMode::Workspace,
             workspace_label: "feat",
             vcs: &vcs,
             user: Some("dev"),

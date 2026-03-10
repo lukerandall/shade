@@ -156,9 +156,9 @@ env_dir = "{env_dir}"
 # Version control system: "jj" (Jujutsu) or "git".
 # vcs = "jj"
 
-# How repos are linked into shades: "workspace" (shared history, lightweight)
+# How repos are placed in the shade directory: "link" (symlink, default)
 # or "clone" (independent copy, safer for untrusted agents).
-# link_mode = "workspace"
+# link_mode = "link"
 
 # Initialize a new repo in each shade directory on creation.
 # init_repo = false
@@ -187,6 +187,10 @@ image = "ubuntu:latest"
 
 # Terminal multiplexer to install and use ("zellij" or "tmux").
 # multiplexer = "zellij"
+
+# How repos are set up inside the container: "workspace" (default, creates
+# a jj workspace or git worktree) or "direct" (mounts repo directly).
+# repo_mode = "workspace"
 
 # Shell command baked into the Docker image during `shade docker build`.
 # Runs as root. Rebuild with `shade docker build` after changing.
@@ -332,14 +336,14 @@ mod tests {
     }
 
     #[test]
-    fn test_link_mode_defaults_to_workspace() {
+    fn test_link_mode_defaults_to_link() {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
 
         fs::write(&config_path, "").unwrap();
 
         let config = Config::load_from(&config_path).unwrap();
-        assert_eq!(config.link_mode, LinkMode::Workspace);
+        assert_eq!(config.link_mode, LinkMode::Link);
     }
 
     #[test]
