@@ -391,6 +391,7 @@ fn main() -> Result<()> {
                 &resolved,
                 &config.docker.limits,
                 install_jj,
+                config.docker.user.as_deref(),
             )?;
         }
         Command::Docker(DockerCommand::Clean) => {

@@ -180,18 +180,31 @@ pub fn run_docker(
 
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
-            let has_prebuilt =
-                prebuilt_image_exists(&docker.image, docker.setup.as_deref(), mux, install_jj);
+            let user = docker.user.as_deref();
+            let has_prebuilt = prebuilt_image_exists(
+                &docker.image,
+                docker.setup.as_deref(),
+                mux,
+                install_jj,
+                user,
+            );
 
-            if !has_prebuilt && (docker.setup.is_some() || mux.is_some() || install_jj) {
+            if !has_prebuilt
+                && (docker.setup.is_some() || mux.is_some() || install_jj || user.is_some())
+            {
                 bail!(
                     "no prebuilt image found. Run `shade docker build` first to bake in setup and tools"
                 );
             }
 
             let effective_image = if has_prebuilt {
-                let prebuilt =
-                    prebuilt_image_name(&docker.image, docker.setup.as_deref(), mux, install_jj);
+                let prebuilt = prebuilt_image_name(
+                    &docker.image,
+                    docker.setup.as_deref(),
+                    mux,
+                    install_jj,
+                    user,
+                );
                 println!("Creating container {name} from prebuilt image...");
                 prebuilt
             } else {
@@ -449,8 +462,9 @@ pub fn build_image(
     env: &[(String, String)],
     limits: &ContainerLimits,
     install_jj: bool,
+    user: Option<&str>,
 ) -> Result<String> {
-    let image_tag = prebuilt_image_name(base_image, setup, multiplexer, install_jj);
+    let image_tag = prebuilt_image_name(base_image, setup, multiplexer, install_jj, user);
 
     // Check if image already exists
     let check = Command::new("docker")
@@ -476,6 +490,12 @@ pub fn build_image(
 
     // Build a script that runs setup + installs the multiplexer
     let mut steps = Vec::new();
+    if let Some(username) = user {
+        println!("Creating user {username} in image...");
+        steps.push(format!(
+            "id -u {username} >/dev/null 2>&1 || useradd -m -s /bin/bash {username}"
+        ));
+    }
     if let Some(setup_cmd) = setup {
         let setup_cmd = setup_cmd.trim();
         let hash = hash_setup(setup_cmd);
@@ -535,8 +555,9 @@ pub fn prebuilt_image_exists(
     setup: Option<&str>,
     multiplexer: Option<&MultiplexerKind>,
     install_jj: bool,
+    user: Option<&str>,
 ) -> bool {
-    let tag = prebuilt_image_name(base_image, setup, multiplexer, install_jj);
+    let tag = prebuilt_image_name(base_image, setup, multiplexer, install_jj, user);
     Command::new("docker")
         .args(["image", "inspect", &tag])
         .output()
@@ -548,14 +569,16 @@ fn prebuilt_image_name(
     setup: Option<&str>,
     multiplexer: Option<&MultiplexerKind>,
     install_jj: bool,
+    user: Option<&str>,
 ) -> String {
     let mux_str = match multiplexer {
         Some(kind) => kind.get().name().to_string(),
         None => String::new(),
     };
     let jj_str = if install_jj { "jj" } else { "" };
+    let user_str = user.unwrap_or("");
     let combined = format!(
-        "{base_image}:{setup}:{mux_str}:{jj_str}",
+        "{base_image}:{setup}:{mux_str}:{jj_str}:{user_str}",
         setup = setup.unwrap_or("")
     );
     let hash = hash_setup(&combined);
@@ -804,9 +827,17 @@ mod tests {
 
     #[test]
     fn test_prebuilt_image_name_with_jj() {
-        let name_without = prebuilt_image_name("ubuntu:latest", None, None, false);
-        let name_with = prebuilt_image_name("ubuntu:latest", None, None, true);
+        let name_without = prebuilt_image_name("ubuntu:latest", None, None, false, None);
+        let name_with = prebuilt_image_name("ubuntu:latest", None, None, true, None);
         // Different install_jj should produce different image names
+        assert_ne!(name_without, name_with);
+    }
+
+    #[test]
+    fn test_prebuilt_image_name_with_user() {
+        let name_without = prebuilt_image_name("ubuntu:latest", None, None, false, None);
+        let name_with = prebuilt_image_name("ubuntu:latest", None, None, false, Some("dev"));
+        // Different user should produce different image names
         assert_ne!(name_without, name_with);
     }
 }
