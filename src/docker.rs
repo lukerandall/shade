@@ -286,7 +286,6 @@ fn path_export(paths: &[String]) -> Option<String> {
 fn setup_script(
     system_setup: Option<&str>,
     user_setup: Option<&str>,
-    user: Option<&str>,
     mux: Option<&MultiplexerKind>,
     paths: &[String],
     detach: bool,
@@ -329,16 +328,13 @@ fn setup_script(
     }
 
     if let Some(cmd) = user_setup {
+        // At runtime the container already runs as the configured user,
+        // so no runuser needed (unlike build_image which runs as root).
         let cmd = cmd.trim();
         let hash = hash_setup(cmd);
         let marker = format!("{SETUP_MARKER}-user");
-        let run_cmd = if let Some(username) = user {
-            format!("runuser -l {username} -c '{cmd}'")
-        } else {
-            cmd.to_string()
-        };
         parts.push(format!(
-            "if [ ! -f {marker} ] || [ \"$(cat {marker})\" != \"{hash}\" ]; then {run_cmd} && echo '{hash}' > {marker}; fi"
+            "if [ ! -f {marker} ] || [ \"$(cat {marker})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {marker}; fi"
         ));
     }
 
@@ -399,7 +395,6 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     let script = setup_script(
         opts.system_setup,
         opts.user_setup,
-        opts.user,
         opts.multiplexer,
         opts.paths,
         opts.detach,
@@ -557,7 +552,12 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
     if let Some(mux_kind) = multiplexer {
         let mux = mux_kind.get();
         println!("Including {} in image...", mux.name());
-        steps.push(mux.install_cmd().to_string());
+        // Install to /usr/local/bin during build (running as root)
+        let cmd = mux.install_cmd().replace(
+            "cargo-binstall -y",
+            "cargo-binstall -y --install-path /usr/local/bin",
+        );
+        steps.push(cmd);
     }
     if let Some(cmd) = system_setup {
         let cmd = cmd.trim();
@@ -875,7 +875,7 @@ mod tests {
         let cmds = vec![
             "if [ ! -d /workspace/core/.jj ]; then cd /repos/core && jj workspace add --name feat /workspace/core; fi".to_string(),
         ];
-        let script = setup_script(None, None, None, None, &[], false, &cmds);
+        let script = setup_script(None, None, None, &[], false, &cmds);
 
         // Should contain jj availability check
         assert!(script.contains("command -v jj"));
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_setup_script_without_workspace_cmds() {
-        let script = setup_script(None, None, None, None, &[], false, &[]);
+        let script = setup_script(None, None, None, &[], false, &[]);
 
         // Should NOT contain jj check
         assert!(!script.contains("command -v jj"));
@@ -896,18 +896,13 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_script_user_setup_runs_as_user() {
-        let script = setup_script(
-            None,
-            Some("npm install"),
-            Some("dev"),
-            None,
-            &[],
-            false,
-            &[],
-        );
+    fn test_setup_script_user_setup_runs_directly() {
+        // At runtime, the container already runs as the configured user,
+        // so user_setup runs directly (no runuser)
+        let script = setup_script(None, Some("npm install"), None, &[], false, &[]);
 
-        assert!(script.contains("runuser -l dev -c 'npm install'"));
+        assert!(script.contains("npm install"));
+        assert!(!script.contains("runuser"));
     }
 
     #[test]
@@ -915,17 +910,15 @@ mod tests {
         let script = setup_script(
             Some("apt-get install -y git"),
             Some("npm install"),
-            Some("dev"),
             None,
             &[],
             false,
             &[],
         );
 
-        // system_setup runs first (no su)
+        // Both run directly at runtime
         assert!(script.contains("apt-get install -y git"));
-        // user_setup runs as user
-        assert!(script.contains("runuser -l dev"));
+        assert!(script.contains("npm install"));
     }
 
     #[test]

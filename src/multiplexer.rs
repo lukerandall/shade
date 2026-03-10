@@ -37,7 +37,7 @@ impl Multiplexer for Zellij {
     }
 
     fn install_cmd(&self) -> &str {
-        "cargo-binstall -y --install-path /usr/local/bin zellij"
+        "cargo-binstall -y zellij"
     }
 
     fn attach_cmd(&self, session: &str) -> String {
