@@ -49,9 +49,9 @@ s config edit         # Open the config in $EDITOR
 s config generate     # Print a default config to stdout
 s config path         # Print the config file path
 
-s keychain set <name> # Store a secret
-s keychain get <name> # Retrieve a secret
-s keychain list       # List secrets
+s secret set <name>   # Store a secret
+s secret get <name>   # Retrieve a secret
+s secret list         # List secrets
 ```
 
 ## Configuration
@@ -61,7 +61,7 @@ Shade is configured via `~/.config/shade/config.toml`:
 ```toml
 env_dir = "~/Shades"
 code_dirs = ["~/Code"]
-keychain_prefix = "shade."
+secret_prefix = "shade."
 
 # Version control system: "jj" (Jujutsu) or "git".
 # vcs = "jj"
@@ -70,7 +70,7 @@ keychain_prefix = "shade."
 # link_mode = "workspace"
 
 [env]
-GH_TOKEN = { keychain = "gh-token" }
+GH_TOKEN = { secret = "gh-token" }
 
 [docker]
 image = "ubuntu:latest"
@@ -90,10 +90,10 @@ to use git worktrees instead. The `link_mode` controls how repos are linked:
   are visible in the primary repo.
 - `"clone"` — independent copy, safer for untrusted agents.
 
-## Secrets / Keychain
+## Secrets
 
 Shade can inject secrets into Docker containers via environment variables. Secrets
-can be stored in and retrieved from the system keychain using the `shade keychain`
+can be stored in and retrieved from the system keychain using the `shade secret`
 command, which wraps the platform-specific keychain interface (currently macOS
 Keychain is the only backend, but the module is designed with a trait so others
 can be added).
@@ -102,37 +102,37 @@ can be added).
 
 ```bash
 # Store a secret (value as argument)
-shade keychain set gh-token ghp_abc123
+shade secret set gh-token ghp_abc123
 
 # Store a secret (prompted from stdin)
-shade keychain set gh-token
+shade secret set gh-token
 
 # Retrieve a secret
-shade keychain get gh-token
+shade secret get gh-token
 
 # List all shade-managed secrets
-shade keychain list
+shade secret list
 
 # Delete a secret
-shade keychain delete gh-token
+shade secret delete gh-token
 ```
 
-A configurable prefix (default `shade.`) is applied to all service names
-automatically, so `shade keychain set gh-token` stores the value under the
-keychain service `shade.gh-token`. The prefix is set in your config file:
+A configurable prefix (default `shade.`) is applied to all secret names
+automatically, so `shade secret set gh-token` stores the value under the
+secret name `shade.gh-token`. The prefix is set in your config file:
 
 ```toml
-keychain_prefix = "shade."
+secret_prefix = "shade."
 ```
 
 ### Using secrets in environments
 
-Reference keychain entries in your `config.toml` using the short name -- the
+Reference secrets in your `config.toml` using the short name -- the
 prefix is applied automatically:
 
 ```toml
 [env]
-GH_TOKEN = { keychain = "gh-token" }
+GH_TOKEN = { secret = "gh-token" }
 ```
 
 You can also use shell commands or static values:
@@ -143,30 +143,29 @@ STATIC_VAR = "some-value"
 DYNAMIC_VAR = { command = "cat ~/.secrets/token" }
 ```
 
-### Common tokens
+### Common secrets
 
-**Claude Code** — generate an OAuth token with `claude setup-token` and store it
-in the keychain:
+**Claude Code** — generate an OAuth token with `claude setup-token` and store it:
 
 ```bash
-shade keychain set claude sk-ant-o...
+shade secret set claude sk-ant-o...
 ```
 
 ```toml
 [env]
-CLAUDE_CODE_OAUTH_TOKEN = { keychain = "claude" }
+CLAUDE_CODE_OAUTH_TOKEN = { secret = "claude" }
 ```
 
 **GitHub** — create a [personal access token](https://github.com/settings/tokens)
 and store it for use with `gh` and other GitHub tooling:
 
 ```bash
-shade keychain set github ghp_your_token_here
+shade secret set github ghp_your_token_here
 ```
 
 ```toml
 [env]
-GH_TOKEN = { keychain = "github" }
+GH_TOKEN = { secret = "github" }
 ```
 
 ## Other tools

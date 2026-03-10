@@ -115,7 +115,7 @@ pub fn run_docker(
     shade_path: &Path,
     root_docker: &DockerConfig,
     root_env: &HashMap<String, EnvValue>,
-    keychain_prefix: &str,
+    secret_prefix: &str,
     vcs: &dyn Vcs,
 ) -> Result<()> {
     let name = container_name(shade_name);
@@ -146,7 +146,7 @@ pub fn run_docker(
             let repo_mode = docker.repo_mode;
             let link_mode = shade_config.link_mode;
 
-            let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
+            let resolved = env_vars::resolve_env(&merged_env, secret_prefix)?;
 
             let has_prebuilt = prebuilt_image_exists(
                 &docker.image,

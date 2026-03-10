@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
-use crate::keychain::{self, SecretStore};
+use crate::secret::{self, SecretStore};
 
 /// Resolve a `{ command = "..." }` style env var.
 pub fn resolve_command(command: &str) -> Result<String> {
@@ -18,10 +18,10 @@ pub fn resolve_command(command: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Resolve a `{ keychain = "service-name" }` style env var via the platform secret store.
-pub fn resolve_keychain(service: &str) -> Result<String> {
-    let store = keychain::default_store();
-    store.get(service)
+/// Resolve a `{ secret = "name" }` style env var via the platform secret store.
+pub fn resolve_secret(name: &str) -> Result<String> {
+    let store = secret::default_store();
+    store.get(name)
 }
 
 #[cfg(test)]
@@ -41,8 +41,8 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_keychain_missing_item() {
-        let result = resolve_keychain("shade-test-nonexistent-item-abc123");
+    fn test_resolve_secret_missing_item() {
+        let result = resolve_secret("shade-test-nonexistent-item-abc123");
         assert!(result.is_err());
     }
 }

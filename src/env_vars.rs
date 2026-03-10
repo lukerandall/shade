@@ -9,7 +9,7 @@ use crate::credentials;
 ///
 /// Supports three forms in TOML:
 /// - `MY_VAR = "static-value"`
-/// - `GH_TOKEN = { keychain = "gh-token" }`
+/// - `GH_TOKEN = { secret = "gh-token" }`
 /// - `SOME_TOKEN = { command = "cat ~/.secrets/token" }`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -21,18 +21,18 @@ pub enum EnvValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvSource {
-    Keychain(String),
+    Secret(String),
     Command(String),
 }
 
 /// Resolve a map of env var definitions into concrete name=value pairs.
 ///
-/// The `keychain_prefix` is prepended to keychain service names, so config
-/// can use short names like `{ keychain = "gh-token" }` while the actual
-/// keychain entry is stored as e.g. `shade.gh-token`.
+/// The `secret_prefix` is prepended to secret names, so config
+/// can use short names like `{ secret = "gh-token" }` while the actual
+/// secret is stored as e.g. `shade.gh-token`.
 pub fn resolve_env(
     env: &HashMap<String, EnvValue>,
-    keychain_prefix: &str,
+    secret_prefix: &str,
 ) -> Result<Vec<(String, String)>> {
     let mut resolved = Vec::new();
 
@@ -41,9 +41,9 @@ pub fn resolve_env(
             EnvValue::Static(val) => {
                 resolved.push((key.clone(), val.clone()));
             }
-            EnvValue::Dynamic(EnvSource::Keychain(service)) => {
-                let prefixed = format!("{keychain_prefix}{service}");
-                let val = credentials::resolve_keychain(&prefixed)?;
+            EnvValue::Dynamic(EnvSource::Secret(name)) => {
+                let prefixed = format!("{secret_prefix}{name}");
+                let val = credentials::resolve_secret(&prefixed)?;
                 resolved.push((key.clone(), val));
             }
             EnvValue::Dynamic(EnvSource::Command(cmd)) => {
@@ -83,12 +83,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_keychain() {
-        let toml_str = r#"GH_TOKEN = { keychain = "shade-gh-token" }"#;
+    fn test_parse_secret() {
+        let toml_str = r#"GH_TOKEN = { secret = "shade-gh-token" }"#;
         let parsed: HashMap<String, EnvValue> = toml::from_str(toml_str).unwrap();
         assert_eq!(
             parsed.get("GH_TOKEN"),
-            Some(&EnvValue::Dynamic(EnvSource::Keychain(
+            Some(&EnvValue::Dynamic(EnvSource::Secret(
                 "shade-gh-token".to_string()
             )))
         );

@@ -27,7 +27,7 @@ struct RawConfig {
     #[serde(default)]
     init_repo: bool,
     default_shade_setup: Option<String>,
-    keychain_prefix: Option<String>,
+    secret_prefix: Option<String>,
     #[serde(default)]
     env: HashMap<String, EnvValue>,
     #[serde(default)]
@@ -42,7 +42,7 @@ pub struct Config {
     pub link_mode: LinkMode,
     pub init_repo: bool,
     pub default_shade_setup: Option<String>,
-    pub keychain_prefix: String,
+    pub secret_prefix: String,
     pub env: HashMap<String, EnvValue>,
     pub docker: DockerConfig,
 }
@@ -91,9 +91,9 @@ impl Config {
             None => Self::default_code_dirs(),
         };
 
-        let keychain_prefix = raw
-            .keychain_prefix
-            .unwrap_or_else(Self::default_keychain_prefix);
+        let secret_prefix = raw
+            .secret_prefix
+            .unwrap_or_else(Self::default_secret_prefix);
 
         let docker = DockerConfig {
             mounts: raw
@@ -115,7 +115,7 @@ impl Config {
             link_mode,
             init_repo: raw.init_repo,
             default_shade_setup: raw.default_shade_setup,
-            keychain_prefix,
+            secret_prefix,
             env: raw.env,
             docker,
         })
@@ -129,13 +129,13 @@ impl Config {
             link_mode: LinkMode::default(),
             init_repo: false,
             default_shade_setup: None,
-            keychain_prefix: Self::default_keychain_prefix(),
+            secret_prefix: Self::default_secret_prefix(),
             env: HashMap::new(),
             docker: DockerConfig::default(),
         }
     }
 
-    fn default_keychain_prefix() -> String {
+    fn default_secret_prefix() -> String {
         "shade.".to_string()
     }
 
@@ -169,14 +169,14 @@ env_dir = "{env_dir}"
 #   curl -fsSL https://example.com/install.sh | bash
 # """
 
-# Prefix applied to keychain service names (e.g. "shade.my-token").
-keychain_prefix = "{keychain_prefix}"
+# Prefix applied to secret names (e.g. "shade.my-token").
+secret_prefix = "{secret_prefix}"
 
 # Environment variables injected into every shade container.
 # [env]
 # STATIC_VAR = "value"
-# FROM_KEYCHAIN = {{ keychain = "service-name" }}
-# FROM_COMMAND  = {{ command = "cat ~/.secrets/token" }}
+# FROM_SECRET  = {{ secret = "my-token" }}
+# FROM_COMMAND = {{ command = "cat ~/.secrets/token" }}
 
 [docker]
 # Base Docker image.
@@ -214,7 +214,7 @@ image = "ubuntu:latest"
 # no_new_privileges = true
 "##,
             env_dir = Self::DEFAULT_ENV_DIR,
-            keychain_prefix = Self::default_keychain_prefix(),
+            secret_prefix = Self::default_secret_prefix(),
         )
     }
 

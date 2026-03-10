@@ -4,9 +4,9 @@ mod credentials;
 mod docker;
 mod env;
 mod env_vars;
-mod keychain;
 mod multiplexer;
 mod repo_select;
+mod secret;
 mod shade_config;
 mod shell_init;
 mod slug;
@@ -16,7 +16,7 @@ mod vcs;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use keychain::SecretStore;
+use secret::SecretStore;
 use vcs::LinkMode;
 
 #[derive(Parser)]
@@ -40,24 +40,24 @@ enum ConfigCommand {
 }
 
 #[derive(clap::Subcommand)]
-enum KeychainCommand {
-    /// Store a secret in the keychain
+enum SecretCommand {
+    /// Store a secret
     Set {
-        /// Service name (prefix from config is applied automatically)
+        /// Secret name (prefix from config is applied automatically)
         name: String,
         /// Secret value (omit to read from stdin)
         value: Option<String>,
     },
-    /// Fetch a secret from the keychain
+    /// Fetch a secret
     Get {
-        /// Service name (prefix from config is applied automatically)
+        /// Secret name (prefix from config is applied automatically)
         name: String,
     },
-    /// List shade-managed keychain entries
+    /// List stored secrets
     List,
-    /// Delete a secret from the keychain
+    /// Delete a secret
     Delete {
-        /// Service name (prefix from config is applied automatically)
+        /// Secret name (prefix from config is applied automatically)
         name: String,
     },
 }
@@ -119,9 +119,9 @@ enum Command {
     /// Manage the shade configuration file
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Manage secrets in the system keychain
+    /// Manage stored secrets
     #[command(subcommand)]
-    Keychain(KeychainCommand),
+    Secret(SecretCommand),
 }
 
 /// Link or clone selected repos into the shade directory.
@@ -282,7 +282,7 @@ fn run_docker_for_current_shade(config: &config::Config) -> Result<()> {
         &shade_path,
         &config.docker,
         &config.env,
-        &config.keychain_prefix,
+        &config.secret_prefix,
         vcs.as_ref(),
     )
 }
@@ -334,30 +334,30 @@ fn main() -> Result<()> {
         Command::Config(ConfigCommand::Path) => {
             println!("{}", config::Config::default_path().display());
         }
-        Command::Keychain(ref cmd) => {
+        Command::Secret(ref cmd) => {
             let config = config::Config::load()?;
-            let store = keychain::default_store();
-            let prefix = &config.keychain_prefix;
+            let store = secret::default_store();
+            let prefix = &config.secret_prefix;
             match cmd {
-                KeychainCommand::Set { name, value } => {
-                    let service = format!("{prefix}{name}");
+                SecretCommand::Set { name, value } => {
+                    let full_name = format!("{prefix}{name}");
                     let secret = match value {
                         Some(v) => v.clone(),
                         None => rpassword::prompt_password(format!("Enter value for {name}: "))
                             .context("failed to read secret")?,
                     };
-                    store.set(&service, &secret)?;
-                    println!("Stored {service}");
+                    store.set(&full_name, &secret)?;
+                    println!("Stored {full_name}");
                 }
-                KeychainCommand::Get { name } => {
-                    let service = format!("{prefix}{name}");
-                    let value = store.get(&service)?;
+                SecretCommand::Get { name } => {
+                    let full_name = format!("{prefix}{name}");
+                    let value = store.get(&full_name)?;
                     println!("{value}");
                 }
-                KeychainCommand::List => {
+                SecretCommand::List => {
                     let entries = store.list(prefix)?;
                     if entries.is_empty() {
-                        println!("No keychain entries with prefix \"{prefix}\"");
+                        println!("No secrets with prefix \"{prefix}\"");
                     } else {
                         for entry in &entries {
                             if let Some(short) = entry.strip_prefix(prefix) {
@@ -368,10 +368,10 @@ fn main() -> Result<()> {
                         }
                     }
                 }
-                KeychainCommand::Delete { name } => {
-                    let service = format!("{prefix}{name}");
-                    store.delete(&service)?;
-                    println!("Deleted {service}");
+                SecretCommand::Delete { name } => {
+                    let full_name = format!("{prefix}{name}");
+                    store.delete(&full_name)?;
+                    println!("Deleted {full_name}");
                 }
             }
         }
@@ -411,7 +411,7 @@ fn main() -> Result<()> {
         }
         Command::Docker(DockerCommand::Build) => {
             let config = config::Config::load()?;
-            let resolved = env_vars::resolve_env(&config.env, &config.keychain_prefix)?;
+            let resolved = env_vars::resolve_env(&config.env, &config.secret_prefix)?;
             let vcs = vcs::create_vcs(config.vcs_kind);
             docker::build_image(&docker::BuildImageOptions {
                 base_image: &config.docker.image,
