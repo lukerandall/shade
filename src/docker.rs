@@ -517,13 +517,7 @@ pub fn build_image(
     if let Some(setup_cmd) = setup {
         let setup_cmd = setup_cmd.trim();
         let hash = hash_setup(setup_cmd);
-        // Run setup as the configured user if one is set
-        let cmd_str = if let Some(username) = user {
-            format!("su - {username} -c '{setup_cmd}' && echo '{hash}' > {SETUP_MARKER}")
-        } else {
-            format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}")
-        };
-        steps.push(cmd_str);
+        steps.push(format!("{setup_cmd} && echo '{hash}' > {SETUP_MARKER}"));
     }
     if steps.is_empty() {
         steps.push("echo 'No setup command'".to_string());
