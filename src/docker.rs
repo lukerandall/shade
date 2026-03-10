@@ -117,17 +117,19 @@ pub fn run_docker(
 
     let paths = &docker.path;
 
+    let user = docker.user.as_deref();
+
     match inspect_container(&name)? {
         ContainerState::Running => {
             println!("Attaching to running container {name}...");
-            exec_into(&name, shade_name, mux, paths)?;
+            exec_into(&name, shade_name, mux, paths, user)?;
         }
         ContainerState::Stopped => {
             println!("Starting stopped container {name}...");
             start_container(&name, mux)?;
             if mux.is_some() {
                 wait_for_ready(&name)?;
-                exec_into(&name, shade_name, mux, paths)?;
+                exec_into(&name, shade_name, mux, paths, user)?;
             }
         }
         ContainerState::NotFound => {
@@ -164,23 +166,37 @@ pub fn run_docker(
             // Build workspace commands from workspace_repos + label
             let workspace_cmds: Vec<String> = if install_jj {
                 let label = shade_config.label.as_deref().unwrap_or(shade_name);
-                shade_config
-                    .workspace_repos
-                    .iter()
-                    .map(|r| {
-                        format!(
-                            "if [ ! -d /workspace/{}/.jj ]; then cd /repos/{} && jj workspace add --name {} /workspace/{}; fi",
-                            r.name, r.name, label, r.name
-                        )
-                    })
-                    .collect()
+                let mut cmds: Vec<String> = Vec::new();
+
+                // Chown clone and workspace dirs so the configured user can access them
+                if let Some(username) = docker.user.as_deref() {
+                    for r in &shade_config.workspace_repos {
+                        cmds.push(format!("chown -R {username} /repos/{}", r.name));
+                    }
+                    cmds.push(format!("chown {username} /workspace"));
+                }
+
+                for r in &shade_config.workspace_repos {
+                    cmds.push(format!(
+                        "if [ ! -d /workspace/{}/.jj ]; then cd /repos/{} && jj workspace add --name {} /workspace/{}; fi",
+                        r.name, r.name, label, r.name
+                    ));
+                }
+
+                // Chown the created workspace dirs too
+                if let Some(username) = docker.user.as_deref() {
+                    for r in &shade_config.workspace_repos {
+                        cmds.push(format!("chown -R {username} /workspace/{}", r.name));
+                    }
+                }
+
+                cmds
             } else {
                 Vec::new()
             };
 
             let resolved = env_vars::resolve_env(&merged_env, keychain_prefix)?;
 
-            let user = docker.user.as_deref();
             let has_prebuilt = prebuilt_image_exists(
                 &docker.image,
                 docker.system_setup.as_deref(),
@@ -236,7 +252,7 @@ pub fn run_docker(
 
             if mux.is_some() {
                 wait_for_ready(&name)?;
-                exec_into(&name, shade_name, mux, paths)?;
+                exec_into(&name, shade_name, mux, paths, user)?;
             }
         }
     }
@@ -286,15 +302,19 @@ fn path_export(paths: &[String]) -> Option<String> {
 fn setup_script(
     system_setup: Option<&str>,
     user_setup: Option<&str>,
+    user: Option<&str>,
     mux: Option<&MultiplexerKind>,
     paths: &[String],
     detach: bool,
     workspace_cmds: &[String],
 ) -> String {
-    let tail = if detach {
-        "exec sleep infinity"
-    } else {
-        "exec /bin/bash"
+    // The container starts as root for setup. The final command drops to the
+    // configured user (if any) via runuser.
+    let tail = match (detach, user) {
+        (true, Some(u)) => format!("exec runuser -l {u} -c 'sleep infinity'"),
+        (true, None) => "exec sleep infinity".to_string(),
+        (false, Some(u)) => format!("exec runuser -l {u} -c 'cd /workspace && exec bash'"),
+        (false, None) => "exec /bin/bash".to_string(),
     };
 
     let mux_install = mux.map(|kind| {
@@ -328,13 +348,16 @@ fn setup_script(
     }
 
     if let Some(cmd) = user_setup {
-        // At runtime the container already runs as the configured user,
-        // so no runuser needed (unlike build_image which runs as root).
         let cmd = cmd.trim();
         let hash = hash_setup(cmd);
         let marker = format!("{SETUP_MARKER}-user");
+        let run_cmd = if let Some(username) = user {
+            format!("runuser -l {username} -c '{cmd}'")
+        } else {
+            cmd.to_string()
+        };
         parts.push(format!(
-            "if [ ! -f {marker} ] || [ \"$(cat {marker})\" != \"{hash}\" ]; then {cmd} && echo '{hash}' > {marker}; fi"
+            "if [ ! -f {marker} ] || [ \"$(cat {marker})\" != \"{hash}\" ]; then {run_cmd} && echo '{hash}' > {marker}; fi"
         ));
     }
 
@@ -374,9 +397,8 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     } else {
         cmd.args(["run", "-it", "--name", opts.name, "-w", "/workspace"]);
     }
-    if let Some(user) = opts.user {
-        cmd.args(["-u", user]);
-    }
+    // Container always starts as root for setup (workspace creation, chown).
+    // The setup script drops to the configured user for the final shell.
     cmd.args(opts.limits.docker_args());
     let vol_args = volume_args(opts.shade_path, opts.repos);
     cmd.args(vol_args);
@@ -395,6 +417,7 @@ fn create_and_run(opts: &CreateOptions) -> Result<()> {
     let script = setup_script(
         opts.system_setup,
         opts.user_setup,
+        opts.user,
         opts.multiplexer,
         opts.paths,
         opts.detach,
@@ -447,9 +470,14 @@ fn exec_into(
     session: &str,
     mux: Option<&MultiplexerKind>,
     paths: &[String],
+    user: Option<&str>,
 ) -> Result<()> {
     let mut cmd = Command::new("docker");
-    cmd.args(["exec", "-it", name]);
+    cmd.args(["exec", "-it"]);
+    if let Some(u) = user {
+        cmd.args(["-u", u]);
+    }
+    cmd.arg(name);
     match mux {
         Some(kind) => {
             let m = kind.get();
@@ -875,7 +903,7 @@ mod tests {
         let cmds = vec![
             "if [ ! -d /workspace/core/.jj ]; then cd /repos/core && jj workspace add --name feat /workspace/core; fi".to_string(),
         ];
-        let script = setup_script(None, None, None, &[], false, &cmds);
+        let script = setup_script(None, None, None, None, &[], false, &cmds);
 
         // Should contain jj availability check
         assert!(script.contains("command -v jj"));
@@ -887,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_setup_script_without_workspace_cmds() {
-        let script = setup_script(None, None, None, &[], false, &[]);
+        let script = setup_script(None, None, None, None, &[], false, &[]);
 
         // Should NOT contain jj check
         assert!(!script.contains("command -v jj"));
@@ -896,29 +924,40 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_script_user_setup_runs_directly() {
-        // At runtime, the container already runs as the configured user,
-        // so user_setup runs directly (no runuser)
-        let script = setup_script(None, Some("npm install"), None, &[], false, &[]);
-
-        assert!(script.contains("npm install"));
-        assert!(!script.contains("runuser"));
-    }
-
-    #[test]
-    fn test_setup_script_system_and_user_setup() {
+    fn test_setup_script_user_setup_with_user() {
         let script = setup_script(
-            Some("apt-get install -y git"),
+            None,
             Some("npm install"),
+            Some("dev"),
             None,
             &[],
             false,
             &[],
         );
 
-        // Both run directly at runtime
-        assert!(script.contains("apt-get install -y git"));
+        assert!(script.contains("runuser -l dev -c 'npm install'"));
+    }
+
+    #[test]
+    fn test_setup_script_user_setup_without_user() {
+        let script = setup_script(None, Some("npm install"), None, None, &[], false, &[]);
+
         assert!(script.contains("npm install"));
+        assert!(!script.contains("runuser"));
+    }
+
+    #[test]
+    fn test_setup_script_drops_to_user_for_shell() {
+        let script = setup_script(None, None, Some("dev"), None, &[], false, &[]);
+
+        assert!(script.ends_with("exec runuser -l dev -c 'cd /workspace && exec bash'"));
+    }
+
+    #[test]
+    fn test_setup_script_drops_to_user_for_detach() {
+        let script = setup_script(None, None, Some("dev"), None, &[], true, &[]);
+
+        assert!(script.contains("exec runuser -l dev -c 'sleep infinity'"));
     }
 
     #[test]
