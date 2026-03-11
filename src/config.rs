@@ -196,6 +196,10 @@ image = "ubuntu:latest"
 # Runs as root. Rebuild with `shade docker build` after changing.
 # base_image_setup = "apt-get update && apt-get install -y ripgrep"
 
+# Shell command baked into the Docker image during `shade docker build`.
+# Runs as the configured user. Requires `user` to be set.
+# base_image_user_setup = "curl -fsSL https://example.com/dotfiles/install.sh | bash"
+
 # Extra directories to prepend to PATH inside the container.
 # path = ["/home/dev/.cargo/bin"]
 

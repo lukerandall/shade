@@ -151,6 +151,7 @@ pub fn run_docker(
             let has_prebuilt = prebuilt_image_exists(
                 &docker.image,
                 docker.base_image_setup.as_deref(),
+                docker.base_image_user_setup.as_deref(),
                 mux,
                 vcs.name(),
                 user,
@@ -158,6 +159,7 @@ pub fn run_docker(
 
             let has_workspace_repos = repo_mode == RepoMode::Workspace && !repos.is_empty();
             let needs_prebuilt = docker.base_image_setup.is_some()
+                || docker.base_image_user_setup.is_some()
                 || mux.is_some()
                 || has_workspace_repos
                 || user.is_some();
@@ -171,6 +173,7 @@ pub fn run_docker(
                 let prebuilt = prebuilt_image_name(
                     &docker.image,
                     docker.base_image_setup.as_deref(),
+                    docker.base_image_user_setup.as_deref(),
                     mux,
                     vcs.name(),
                     user,
@@ -480,6 +483,7 @@ fn exec_into(
 pub struct BuildImageOptions<'a> {
     pub base_image: &'a str,
     pub base_image_setup: Option<&'a str>,
+    pub base_image_user_setup: Option<&'a str>,
     pub multiplexer: Option<&'a MultiplexerKind>,
     pub env: &'a [(String, String)],
     pub limits: &'a ContainerLimits,
@@ -492,6 +496,7 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
     let BuildImageOptions {
         base_image,
         base_image_setup,
+        base_image_user_setup,
         multiplexer,
         env,
         limits,
@@ -499,8 +504,14 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
         user,
     } = opts;
     let vcs_name = vcs.name();
-    let image_tag =
-        prebuilt_image_name(base_image, *base_image_setup, *multiplexer, vcs_name, *user);
+    let image_tag = prebuilt_image_name(
+        base_image,
+        *base_image_setup,
+        *base_image_user_setup,
+        *multiplexer,
+        vcs_name,
+        *user,
+    );
 
     // Check if image already exists
     let check = Command::new("docker")
@@ -563,6 +574,16 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
         let hash = hash_setup(cmd);
         steps.push(format!("{cmd} && echo '{hash}' > {SETUP_MARKER}"));
     }
+    if let Some(cmd) = base_image_user_setup {
+        let username = user.ok_or_else(|| {
+            anyhow::anyhow!("base_image_user_setup requires a user to be configured")
+        })?;
+        let cmd = cmd.trim();
+        steps.push(format!(
+            "runuser -l {username} -c '{}'",
+            cmd.replace('\'', "'\\''")
+        ));
+    }
     if steps.is_empty() {
         steps.push("echo 'No setup command'".to_string());
     }
@@ -600,11 +621,19 @@ pub fn build_image(opts: &BuildImageOptions) -> Result<String> {
 pub fn prebuilt_image_exists(
     base_image: &str,
     base_image_setup: Option<&str>,
+    base_image_user_setup: Option<&str>,
     multiplexer: Option<&MultiplexerKind>,
     vcs_name: &str,
     user: Option<&str>,
 ) -> bool {
-    let tag = prebuilt_image_name(base_image, base_image_setup, multiplexer, vcs_name, user);
+    let tag = prebuilt_image_name(
+        base_image,
+        base_image_setup,
+        base_image_user_setup,
+        multiplexer,
+        vcs_name,
+        user,
+    );
     Command::new("docker")
         .args(["image", "inspect", &tag])
         .output()
@@ -614,6 +643,7 @@ pub fn prebuilt_image_exists(
 fn prebuilt_image_name(
     base_image: &str,
     base_image_setup: Option<&str>,
+    base_image_user_setup: Option<&str>,
     multiplexer: Option<&MultiplexerKind>,
     vcs_name: &str,
     user: Option<&str>,
@@ -624,8 +654,9 @@ fn prebuilt_image_name(
     };
     let user_str = user.unwrap_or("");
     let combined = format!(
-        "{base_image}:{}:{mux_str}:{vcs_name}:{user_str}",
+        "{base_image}:{}:{}:{mux_str}:{vcs_name}:{user_str}",
         base_image_setup.unwrap_or(""),
+        base_image_user_setup.unwrap_or(""),
     );
     let hash = hash_setup(&combined);
     format!("shade-prebuilt:{hash:x}")
@@ -981,15 +1012,15 @@ mod tests {
 
     #[test]
     fn test_prebuilt_image_name_with_vcs() {
-        let name_jj = prebuilt_image_name("ubuntu:latest", None, None, "jj", None);
-        let name_git = prebuilt_image_name("ubuntu:latest", None, None, "git", None);
+        let name_jj = prebuilt_image_name("ubuntu:latest", None, None, None, "jj", None);
+        let name_git = prebuilt_image_name("ubuntu:latest", None, None, None, "git", None);
         assert_ne!(name_jj, name_git);
     }
 
     #[test]
     fn test_prebuilt_image_name_with_user() {
-        let name_without = prebuilt_image_name("ubuntu:latest", None, None, "jj", None);
-        let name_with = prebuilt_image_name("ubuntu:latest", None, None, "jj", Some("dev"));
+        let name_without = prebuilt_image_name("ubuntu:latest", None, None, None, "jj", None);
+        let name_with = prebuilt_image_name("ubuntu:latest", None, None, None, "jj", Some("dev"));
         assert_ne!(name_without, name_with);
     }
 

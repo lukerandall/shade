@@ -49,6 +49,9 @@ pub struct DockerConfig {
     /// Shell command baked into the Docker image during `shade docker build`.
     /// Runs as root. Rebuild with `shade docker build` after changing.
     pub base_image_setup: Option<String>,
+    /// Shell command baked into the Docker image during `shade docker build`.
+    /// Runs as the configured user. Rebuild with `shade docker build` after changing.
+    pub base_image_user_setup: Option<String>,
     /// Shell command that runs as the configured user at container start.
     /// Re-runs when changed (content-hashed).
     pub shade_setup: Option<String>,
@@ -70,6 +73,7 @@ impl Default for DockerConfig {
         Self {
             image: default_image(),
             base_image_setup: None,
+            base_image_user_setup: None,
             shade_setup: None,
             user: None,
             multiplexer: None,
@@ -86,6 +90,7 @@ impl Default for DockerConfig {
 pub struct DockerConfigOverride {
     pub image: Option<String>,
     pub base_image_setup: Option<String>,
+    pub base_image_user_setup: Option<String>,
     pub shade_setup: Option<String>,
     pub user: Option<String>,
     pub multiplexer: Option<MultiplexerKind>,
@@ -107,6 +112,10 @@ impl DockerConfig {
                 .base_image_setup
                 .clone()
                 .or_else(|| self.base_image_setup.clone()),
+            base_image_user_setup: overrides
+                .base_image_user_setup
+                .clone()
+                .or_else(|| self.base_image_user_setup.clone()),
             shade_setup: overrides
                 .shade_setup
                 .clone()

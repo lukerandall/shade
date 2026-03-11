@@ -416,6 +416,7 @@ fn main() -> Result<()> {
             docker::build_image(&docker::BuildImageOptions {
                 base_image: &config.docker.image,
                 base_image_setup: config.docker.base_image_setup.as_deref(),
+                base_image_user_setup: config.docker.base_image_user_setup.as_deref(),
                 multiplexer: config.docker.multiplexer.as_ref(),
                 env: &resolved,
                 limits: &config.docker.limits,
