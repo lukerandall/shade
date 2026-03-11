@@ -13,6 +13,8 @@ mod slug;
 mod tui;
 mod vcs;
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 
@@ -151,18 +153,21 @@ fn select_and_link_repos(
     match repo_select::run_repo_select(repos, current_repo.as_deref(), &existing)? {
         repo_select::RepoSelectResult::Selected(selected) => {
             for repo in &selected {
+                // Use just the final path component as the link name so that
+                // grouped repos like "group/repo" link as "repo", not "group/repo".
+                let link_name = Path::new(&repo.name)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| repo.name.clone());
                 match link_mode {
                     LinkMode::Link => {
                         print!("Linking {}... ", repo.name);
-                        let link_path = env_path.join(&repo.name);
-                        if let Some(parent) = link_path.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
+                        let link_path = env_path.join(&link_name);
                         match std::os::unix::fs::symlink(&repo.path, &link_path) {
                             Ok(()) => {
                                 println!("done");
                                 linked_repos.push(shade_config::LinkedRepo {
-                                    name: repo.name.clone(),
+                                    name: link_name,
                                     primary_repo_path: repo.path.to_string_lossy().to_string(),
                                 });
                             }
@@ -171,11 +176,15 @@ fn select_and_link_repos(
                     }
                     LinkMode::Clone => {
                         print!("Cloning {}... ", repo.name);
-                        match vcs.clone_repo(repo, env_path) {
+                        let clone_repo = vcs::Repo {
+                            name: link_name.clone(),
+                            path: repo.path.clone(),
+                        };
+                        match vcs.clone_repo(&clone_repo, env_path) {
                             Ok(()) => {
                                 println!("done");
                                 linked_repos.push(shade_config::LinkedRepo {
-                                    name: repo.name.clone(),
+                                    name: link_name,
                                     primary_repo_path: repo.path.to_string_lossy().to_string(),
                                 });
                             }
