@@ -84,7 +84,7 @@ impl App {
                 })
                 .collect();
             // Sort by score descending (best matches first)
-            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
             self.filtered_indices = scored.into_iter().map(|(i, _)| i).collect();
         }
 
@@ -599,7 +599,7 @@ mod tests {
         app.filter = "mf".to_string();
         app.apply_filter();
 
-        assert!(app.filtered_indices.len() >= 1);
+        assert!(!app.filtered_indices.is_empty());
         assert_eq!(
             app.environments[app.filtered_indices[0]].label,
             "my-feature"
