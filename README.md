@@ -49,15 +49,20 @@ where the work landed) — the signal that a shade is safe to clean up.
 These [Claude Code](https://claude.ai/code) skills under `skills/` drive this, and
 `bin/install` links them into `~/.claude/skills`:
 
-- **`/shade-plan`** — turn a rough idea into a grounded `TASK.md` (the front door).
+- **`/shade-kickoff`** — turn a rough idea into a grounded `TASK.md` (the front door).
+- **`/shade-refine`** — record a mid-flight change of direction: revise `TASK.md`,
+  append a superseding `DECISIONS.md` entry, note the shift in `LOG.md`, and reconcile
+  the in-flight `tasks/` briefs. Kickoff grounds the plan; refine revises it.
 - **`/shade-orchestrate`** — start or resume the orchestrator for the current shade.
 - **`/shade-implement`** — run as an implementer against one scoped task.
 - **`/shade-status`** — summarise where a shade stands; `--html` writes a status page.
 - **`/shade-dashboard`** — a numbered status board across all shades; say "deeper N" to
   drill into one. Enriched with live agent state from [herdr](https://herdr.dev)
   when it's running.
+- **`/shade-close`** — close out a finished shade: verify its acceptance criteria are
+  met and the work has landed, then write the `DONE.md` completion marker.
 - **`/shade-tidy`** — survey accumulated shades and clean up the finished ones.
-- **`/shade-graduate`** — promote the current session into a shade when a quick
+- **`/shade-promote`** — promote the current session into a shade when a quick
   exploration has grown into real work: links the repos in play and carries the
   conversation so far into the shade's `TASK.md`/`DECISIONS.md`/`LOG.md`.
 

@@ -1,11 +1,11 @@
 ---
-name: shade-plan
-description: Turn a rough idea into a grounded TASK.md for a shade — explore the linked workspaces, interrogate the idea, draft the goal/scope/acceptance criteria, and seed the log. The front door before /shade-orchestrate. Use to "plan this task", "scope this out", "kick off a task", "help me figure out what to build", or when TASK.md is still empty.
+name: shade-kickoff
+description: Turn a rough idea into a grounded TASK.md for a shade — explore the linked workspaces, interrogate the idea, draft the goal/scope/acceptance criteria, and seed the log. The front door before /shade-orchestrate. Use to "kick off a task", "kickoff this shade", "plan this task", "scope this out", "help me figure out what to build", or when TASK.md is still empty.
 argument-hint: [rough description of the idea]
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent
 ---
 
-# Plan
+# Kickoff
 
 You turn a rough idea into a **grounded `TASK.md`** — the brief that `/shade-orchestrate`
 and implementers then drive towards. This is the front door: it runs once at the
@@ -18,7 +18,7 @@ Confirm you are inside a shade (there is an `AGENTS.md` at the root; walk up fro
 cwd if needed). Read `AGENTS.md` for the ways of working, and note which
 repos/workspaces are linked into the shade — those are the surface area you're
 planning against. If `TASK.md`/`DECISIONS.md`/`LOG.md` already have content, read
-them first; you may be re-planning, not starting fresh.
+them first; you may be re-framing, not starting fresh.
 
 ## 2. Understand the idea
 

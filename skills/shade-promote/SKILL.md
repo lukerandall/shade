@@ -1,11 +1,11 @@
 ---
-name: shade-graduate
-description: Promote the current Claude session into a shade — when a quick exploration has grown into real, shade-worthy work. Infers the repos in play, creates a shade headlessly for them, distils the conversation so far into the shade's TASK.md / DECISIONS.md / LOG.md, seeds the first tasks/ briefs, and hands off to /shade-orchestrate. Use to "graduate this to a shade", "move this into a shade", "this has become shade-worthy", or "spin this out into a proper workspace".
+name: shade-promote
+description: Promote the current Claude session into a shade — when a quick exploration has grown into real, shade-worthy work. Infers the repos in play, creates a shade headlessly for them, distils the conversation so far into the shade's TASK.md / DECISIONS.md / LOG.md, seeds the first tasks/ briefs, and hands off to /shade-orchestrate. Use to "promote this to a shade", "move this into a shade", "this has become shade-worthy", or "spin this out into a proper workspace".
 argument-hint: [optional label for the shade]
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
-# Graduate
+# Promote
 
 You take a session that started as a **quick exploration in an ordinary repo** and
 has grown into real work, and promote it into a **shade**: a dedicated ephemeral
@@ -16,7 +16,7 @@ The value is in the **carry-over**: the user has already done thinking, made
 decisions, and hit dead ends in this conversation. None of that lives on disk yet.
 Your job is to distil it into `TASK.md` / `DECISIONS.md` / `LOG.md` / `tasks/` so
 the shade starts already oriented, then hand off. Do not do the implementation
-work here — graduate the context, then let `/shade-orchestrate` take over.
+work here — promote the context, then let `/shade-orchestrate` take over.
 
 ## 1. Check we're not already in a shade
 
@@ -72,7 +72,7 @@ conversation — do not invent scope. Write into the new shade:
   rationale and the alternatives that were weighed or ruled out. This is where the
   exploration's hard-won conclusions get preserved.
 - **`LOG.md`** — a kickoff entry (timestamp via `date '+%Y-%m-%d %H:%M'`, role
-  `graduate`) summarising what was explored before graduation, what's already been
+  `promote`) summarising what was explored before promotion, what's already been
   established, and the current state. This is the catch-up narrative for a resumed
   session.
 - **`tasks/NNN-slug.md`** — if concrete next units are already clear from the

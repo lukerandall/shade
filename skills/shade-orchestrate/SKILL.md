@@ -32,7 +32,7 @@ Do not restate it at length; rely on it.
 ## 2. Ground the task
 
 If `TASK.md` is still the skeleton (or thin/ambiguous), the task hasn't been
-planned yet — run `/shade-plan` first (or suggest the user does) to produce a grounded
+planned yet — run `/shade-kickoff` first (or suggest the user does) to produce a grounded
 brief before delegating. For small gaps you can fill Goal, Scope/workspaces, and
 Acceptance criteria directly with the user. A grounded `TASK.md` is what keeps
 implementers and future sessions aligned; note any grounding in `LOG.md`.
@@ -100,9 +100,9 @@ you stop.**
 ## 7. Close out when done
 
 When every acceptance criterion in `TASK.md` is met and the work has landed
-(merged/pushed/handed off), mark the shade complete: write a `DONE.md` marker at
-the shade root and append a final `LOG.md` entry. `DONE.md` should record the
-completion date, a one-line summary, and where the work landed (PR links,
-branches, or commits). This is the signal that the shade is finished and safe to
-clean up later with `/shade-tidy`. Also flip the herdr badge to complete (best-effort):
-`shade herdr report --state complete --headline "<summary>"`.
+(merged/pushed/handed off), mark the shade complete. The close-out is a skill of
+its own — run **`/shade-close`**, which does exactly this: it verifies the criteria
+and that the work has landed, writes a `DONE.md` marker (completion date, one-line
+summary, where the work landed), appends a final `LOG.md` entry, and flips the
+herdr badge to complete. `DONE.md` is the signal that the shade is finished and
+safe to clean up later with `/shade-tidy`.
