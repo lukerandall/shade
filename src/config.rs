@@ -32,6 +32,20 @@ struct RawConfig {
     env: HashMap<String, EnvValue>,
     #[serde(default)]
     docker: DockerConfig,
+    #[serde(default)]
+    herdr: HerdrConfig,
+}
+
+/// Integration with [herdr](https://herdr.dev), a terminal agent multiplexer.
+///
+/// When `enabled`, creating a shade opens it as a herdr workspace, and
+/// `shade herdr report` pushes status badges onto that workspace. All herdr
+/// interaction is best-effort: if herdr is not installed or its server is not
+/// running, shade carries on without it.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct HerdrConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +59,7 @@ pub struct Config {
     pub secret_prefix: String,
     pub env: HashMap<String, EnvValue>,
     pub docker: DockerConfig,
+    pub herdr: HerdrConfig,
 }
 
 impl Config {
@@ -118,6 +133,7 @@ impl Config {
             secret_prefix,
             env: raw.env,
             docker,
+            herdr: raw.herdr,
         })
     }
 
@@ -132,6 +148,7 @@ impl Config {
             secret_prefix: Self::default_secret_prefix(),
             env: HashMap::new(),
             docker: DockerConfig::default(),
+            herdr: HerdrConfig::default(),
         }
     }
 
@@ -216,6 +233,13 @@ image = "ubuntu:latest"
 # cap_drop  = ["ALL"]
 # cap_add   = ["SETUID", "SETGID"]
 # no_new_privileges = true
+
+# Integration with herdr (https://herdr.dev), a terminal agent multiplexer.
+# When enabled, creating a shade opens it as a herdr workspace, and the /status
+# and /orchestrate skills push status badges onto it via `shade herdr report`.
+# All herdr interaction is best-effort and skipped when herdr isn't running.
+# [herdr]
+# enabled = false
 "##,
             env_dir = Self::DEFAULT_ENV_DIR,
             secret_prefix = Self::default_secret_prefix(),
@@ -408,6 +432,26 @@ mod tests {
 
         let config = Config::load_from(&config_path).unwrap();
         assert!(config.init_repo);
+    }
+
+    #[test]
+    fn test_herdr_defaults_to_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert!(!config.herdr.enabled);
+    }
+
+    #[test]
+    fn test_herdr_enabled() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "[herdr]\nenabled = true\n").unwrap();
+
+        let config = Config::load_from(&config_path).unwrap();
+        assert!(config.herdr.enabled);
     }
 
     #[test]

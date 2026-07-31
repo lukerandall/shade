@@ -54,10 +54,53 @@ impl Vcs for GitVcs {
         Ok(())
     }
 
-    fn remove_workspace(&self, repo: &Repo, workspace_name: &str) -> Result<()> {
+    fn add_workspace(
+        &self,
+        repo: &Repo,
+        workspace_path: &Path,
+        workspace_name: &str,
+    ) -> Result<()> {
         let output = Command::new("git")
-            .args(["worktree", "remove", workspace_name, "--force"])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                workspace_name,
+                &workspace_path.to_string_lossy(),
+            ])
             .current_dir(&repo.path)
+            .output()
+            .context("failed to run git worktree add")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "git worktree add failed for {}: {}",
+                repo.name,
+                stderr.trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_workspace(
+        &self,
+        source_repo: &Path,
+        workspace_name: &str,
+        workspace_path: &Path,
+    ) -> Result<()> {
+        // Best-effort: the source repo may have been moved or deleted.
+        if !source_repo.exists() {
+            return Ok(());
+        }
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                &workspace_path.to_string_lossy(),
+            ])
+            .current_dir(source_repo)
             .output()
             .context("failed to run git worktree remove")?;
 
@@ -65,10 +108,18 @@ impl Vcs for GitVcs {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!(
                 "git worktree remove failed for {}: {}",
-                repo.name,
+                workspace_path.display(),
                 stderr.trim()
             );
         }
+
+        // The `-b` from add_workspace leaves a branch behind. Best-effort delete;
+        // do not fail the whole teardown if the branch is already gone.
+        let _ = Command::new("git")
+            .args(["branch", "-D", workspace_name])
+            .current_dir(source_repo)
+            .output();
+
         Ok(())
     }
 
@@ -136,6 +187,97 @@ mod tests {
         let vcs = GitVcs;
         vcs.init_repo(tmp.path()).unwrap();
         assert!(tmp.path().join(".git").is_dir());
+    }
+
+    fn init_git_repo_with_commit(path: &std::path::Path) {
+        std::fs::create_dir_all(path).unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {:?} failed", args);
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(path.join("README.md"), "hello").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+    }
+
+    fn git_worktree_list(source_repo: &std::path::Path) -> String {
+        let out = Command::new("git")
+            .args(["worktree", "list"])
+            .current_dir(source_repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    #[test]
+    fn test_add_workspace_creates_worktree_with_branch() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        init_git_repo_with_commit(&source);
+        let ws_path = tmp.path().join("ws");
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+
+        let vcs = GitVcs;
+        vcs.add_workspace(&repo, &ws_path, "my-shade").unwrap();
+
+        assert!(
+            ws_path.join(".git").exists(),
+            ".git should exist in worktree"
+        );
+        let listed = git_worktree_list(&source);
+        assert!(
+            listed.contains("my-shade"),
+            "worktree should be on branch my-shade: {listed}"
+        );
+    }
+
+    #[test]
+    fn test_remove_workspace_removes_worktree_and_branch() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        init_git_repo_with_commit(&source);
+        let ws_path = tmp.path().join("ws");
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+
+        let vcs = GitVcs;
+        vcs.add_workspace(&repo, &ws_path, "my-shade").unwrap();
+        assert!(ws_path.exists());
+
+        vcs.remove_workspace(&source, "my-shade", &ws_path).unwrap();
+        assert!(!ws_path.exists(), "worktree dir should be gone");
+        let branches = Command::new("git")
+            .args(["branch", "--list", "my-shade"])
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "branch my-shade should be deleted"
+        );
+    }
+
+    #[test]
+    fn test_remove_workspace_ok_when_source_absent() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let ws_path = tmp.path().join("ws");
+        let vcs = GitVcs;
+        // Must not panic or error when the source repo is gone.
+        vcs.remove_workspace(&missing, "my-shade", &ws_path)
+            .unwrap();
     }
 
     #[test]

@@ -20,6 +20,71 @@ are useful on their own as lightweight, disposable workspaces. For stronger
 isolation, you can optionally spin up a Docker container scoped to the shade with
 your tools, secrets, and repos mounted in — but Docker is not required.
 
+## Task workflow
+
+Every shade is scaffolded to support a stop-and-resume, agent-driven workflow. On
+creation, Shade writes these files into the shade directory (existing ones are
+never overwritten):
+
+- **`AGENTS.md`** — describes the environment *and* the ways of working: two tiers
+  of agent (an **orchestrator** that drives the task and delegates, and
+  **implementers** given specific scoped units of work) plus the file protocol
+  below.
+- **`TASK.md`** — the high-level brief and north star for the task.
+- **`LOG.md`** — an append-only, chronological journal agents write to as they
+  work. This is where anyone (or any agent) catches up on what has happened.
+- **`DECISIONS.md`** — durable decisions with their rationale and alternatives.
+- **`tasks/`** — one file per delegated unit (`tasks/NNN-slug.md`): the brief the
+  orchestrator hands an implementer, plus the outcome the implementer records — a
+  preserved audit trail of what each implementer was asked to do and did.
+
+Because the state of a task lives entirely in these files, work can be stopped and
+resumed at any time — a fresh session reconstructs where things stand from
+`TASK.md`, `DECISIONS.md`, and the tail of `LOG.md`. Changes of direction — scope
+shifts, abandoned approaches, decisions that change what's being built — are
+logged as they happen, so a resumed session never loses them. When a task is
+finished, the orchestrator writes a `DONE.md` marker (completion date, summary,
+where the work landed) — the signal that a shade is safe to clean up.
+
+These [Claude Code](https://claude.ai/code) skills under `skills/` drive this, and
+`bin/install` links them into `~/.claude/skills`:
+
+- **`/shade-plan`** — turn a rough idea into a grounded `TASK.md` (the front door).
+- **`/shade-orchestrate`** — start or resume the orchestrator for the current shade.
+- **`/shade-implement`** — run as an implementer against one scoped task.
+- **`/shade-status`** — summarise where a shade stands; `--html` writes a status page.
+- **`/shade-dashboard`** — a numbered status board across all shades; say "deeper N" to
+  drill into one. Enriched with live agent state from [herdr](https://herdr.dev)
+  when it's running.
+- **`/shade-tidy`** — survey accumulated shades and clean up the finished ones.
+- **`/shade-graduate`** — promote the current session into a shade when a quick
+  exploration has grown into real work: links the repos in play and carries the
+  conversation so far into the shade's `TASK.md`/`DECISIONS.md`/`LOG.md`.
+
+### herdr integration
+
+Shade integrates optionally with [herdr](https://herdr.dev), a terminal agent
+multiplexer. Enable it in your config:
+
+```toml
+[herdr]
+enabled = true
+```
+
+With this on, creating a shade opens it as a herdr workspace, and the `/shade-status`
+and `/shade-orchestrate` skills push a status badge (state, progress, headline) onto
+that workspace via `shade herdr report`, so herdr's workspace list reflects where
+each task stands. You can also drive it manually:
+
+```bash
+shade herdr open                                  # open the current shade as a workspace
+shade herdr report --state active --progress 3/7 --headline "..."
+```
+
+All herdr interaction is best-effort: if herdr isn't installed or its server isn't
+running, shade carries on without it. `/shade-dashboard` also reads live agent state from
+herdr when it's running, to show which shades have an agent actively working.
+
 ## Quick start
 
 Add shell integration to your shell config (fish shown here):

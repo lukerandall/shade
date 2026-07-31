@@ -55,10 +55,48 @@ impl Vcs for JjVcs {
         Ok(())
     }
 
-    fn remove_workspace(&self, repo: &Repo, workspace_name: &str) -> Result<()> {
+    fn add_workspace(
+        &self,
+        repo: &Repo,
+        workspace_path: &Path,
+        workspace_name: &str,
+    ) -> Result<()> {
+        let output = Command::new("jj")
+            .args([
+                "workspace",
+                "add",
+                "--name",
+                workspace_name,
+                &workspace_path.to_string_lossy(),
+            ])
+            .current_dir(&repo.path)
+            .output()
+            .context("failed to run jj workspace add")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "jj workspace add failed for {}: {}",
+                repo.name,
+                stderr.trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_workspace(
+        &self,
+        source_repo: &Path,
+        workspace_name: &str,
+        _workspace_path: &Path,
+    ) -> Result<()> {
+        // Best-effort: the source repo may have been moved or deleted.
+        if !source_repo.exists() {
+            return Ok(());
+        }
         let output = Command::new("jj")
             .args(["workspace", "forget", workspace_name])
-            .current_dir(&repo.path)
+            .current_dir(source_repo)
             .output()
             .context("failed to run jj workspace forget")?;
 
@@ -66,7 +104,7 @@ impl Vcs for JjVcs {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!(
                 "jj workspace forget failed for {}: {}",
-                repo.name,
+                workspace_name,
                 stderr.trim()
             );
         }
@@ -200,6 +238,82 @@ mod tests {
         let vcs = JjVcs;
         vcs.init_repo(tmp.path()).unwrap();
         assert!(tmp.path().join(".jj").is_dir());
+    }
+
+    fn init_jj_repo(path: &std::path::Path) {
+        std::fs::create_dir_all(path).unwrap();
+        let init = Command::new("jj")
+            .args(["git", "init"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "jj git init failed");
+    }
+
+    fn jj_workspace_list(source_repo: &std::path::Path) -> String {
+        let out = Command::new("jj")
+            .args(["workspace", "list"])
+            .current_dir(source_repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    #[test]
+    fn test_add_workspace_creates_and_registers() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        init_jj_repo(&source);
+        let ws_path = tmp.path().join("ws");
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+
+        let vcs = JjVcs;
+        vcs.add_workspace(&repo, &ws_path, "my-shade").unwrap();
+
+        assert!(
+            ws_path.join(".jj").is_dir(),
+            ".jj should exist in workspace"
+        );
+        assert!(
+            jj_workspace_list(&source).contains("my-shade"),
+            "workspace should be registered in the source repo"
+        );
+    }
+
+    #[test]
+    fn test_remove_workspace_forgets_registration() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        init_jj_repo(&source);
+        let ws_path = tmp.path().join("ws");
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+
+        let vcs = JjVcs;
+        vcs.add_workspace(&repo, &ws_path, "my-shade").unwrap();
+        assert!(jj_workspace_list(&source).contains("my-shade"));
+
+        vcs.remove_workspace(&source, "my-shade", &ws_path).unwrap();
+        assert!(
+            !jj_workspace_list(&source).contains("my-shade"),
+            "workspace should be forgotten after removal"
+        );
+    }
+
+    #[test]
+    fn test_remove_workspace_ok_when_source_absent() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let ws_path = tmp.path().join("ws");
+        let vcs = JjVcs;
+        // Must not panic or error when the source repo is gone.
+        vcs.remove_workspace(&missing, "my-shade", &ws_path)
+            .unwrap();
     }
 
     #[test]

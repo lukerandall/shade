@@ -1,4 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo install --path .
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cargo install --path "$repo_root"
+
+# Install the bundled Claude Code skills by symlinking them into ~/.claude/skills
+# so they stay in sync with this checkout. Existing entries that aren't our
+# symlinks are left untouched.
+skills_src="$repo_root/skills"
+skills_dst="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+if [ -d "$skills_src" ]; then
+  mkdir -p "$skills_dst"
+  for skill in "$skills_src"/*/; do
+    name="$(basename "$skill")"
+    target="$skills_dst/$name"
+    if [ -L "$target" ]; then
+      ln -sfn "$skill" "$target"
+      echo "linked skill: $name"
+    elif [ -e "$target" ]; then
+      echo "skipping skill '$name': $target exists and is not a symlink" >&2
+    else
+      ln -s "$skill" "$target"
+      echo "linked skill: $name"
+    fi
+  done
+fi

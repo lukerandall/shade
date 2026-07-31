@@ -51,9 +51,22 @@ pub trait Vcs {
     /// Clone a repo into the target directory (independent copy).
     fn clone_repo(&self, repo: &Repo, target: &Path) -> Result<()>;
 
-    /// Remove a workspace/worktree by name from a repo.
-    #[allow(dead_code)]
-    fn remove_workspace(&self, repo: &Repo, workspace_name: &str) -> Result<()>;
+    /// Create an isolated working copy of `repo` on the host at `workspace_path`,
+    /// labelled `workspace_name`. Run inside the source repo. This is the host-side
+    /// analogue of `container_workspace_cmd` (a jj workspace / git worktree, not a
+    /// full clone).
+    fn add_workspace(&self, repo: &Repo, workspace_path: &Path, workspace_name: &str)
+    -> Result<()>;
+
+    /// Tear down a host workspace/worktree previously created by `add_workspace`.
+    /// Run inside `source_repo` (where the workspace is registered). Best-effort:
+    /// returns `Ok(())` if `source_repo` no longer exists.
+    fn remove_workspace(
+        &self,
+        source_repo: &Path,
+        workspace_name: &str,
+        workspace_path: &Path,
+    ) -> Result<()>;
 
     /// Shell command to install this VCS tool (for Docker image builds).
     fn install_cmd(&self) -> &str;
