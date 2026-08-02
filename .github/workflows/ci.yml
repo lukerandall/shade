@@ -9,6 +9,10 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # The version the vcs::jj tests are developed against, pinned for the
+      # same reason the Rust toolchain is.
+      JJ_VERSION: 0.40.0
     steps:
       - uses: actions/checkout@v4
       # The runner's preinstalled rustup reads rust-toolchain.toml, so the
@@ -16,4 +20,21 @@ jobs:
       # here. Runs before the cache so the cache is keyed on the pinned rustc.
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
+      # The vcs::jj tests drive a real jj binary, which the runner does not
+      # ship. The musl build is static, so it runs as-is on the gnu runner.
+      - name: Install jj
+        run: |
+          mkdir -p "$RUNNER_TEMP/jj" "$HOME/.local/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/jj"
+          mv "$RUNNER_TEMP/jj/jj" "$HOME/.local/bin/jj"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Without an identity jj warns on every commit it writes and refuses to
+      # push, so configure one rather than let the tests run in that state.
+      - name: Configure jj
+        run: |
+          jj --version
+          jj config set --user user.name "shade CI"
+          jj config set --user user.email "ci@shade.invalid"
       - run: bin/check
