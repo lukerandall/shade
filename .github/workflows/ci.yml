@@ -11,8 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # The runner's preinstalled rustup reads rust-toolchain.toml, so the
+      # channel and components are pinned in one place rather than restated
+      # here. Runs before the cache so the cache is keyed on the pinned rustc.
+      - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: bin/check
