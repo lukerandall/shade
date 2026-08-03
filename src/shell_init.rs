@@ -34,7 +34,7 @@ pub fn shell_init(shell: ShellKind) -> String {
 
 const FISH_FUNCTION: &str = r#"function s --description "Open a shade environment"
     switch "$argv[1]"
-        case new cd
+        case new cd unarchive
             set -l path (command shade $argv | tail -n 1)
             if test -n "$path"
                 cd "$path"
@@ -52,7 +52,7 @@ end
 
 const BASH_FUNCTION: &str = r#"s() {
     case "$1" in
-        new|cd)
+        new|cd|unarchive)
             local path
             path="$(command shade "$@" | tail -n 1)"
             if [ -n "$path" ]; then
@@ -75,7 +75,7 @@ const BASH_FUNCTION: &str = r#"s() {
 
 const ZSH_FUNCTION: &str = r#"s() {
     case "$1" in
-        new|cd)
+        new|cd|unarchive)
             local path
             path="$(command shade "$@" | tail -n 1)"
             if [[ -n "$path" ]]; then
@@ -99,6 +99,9 @@ const ZSH_FUNCTION: &str = r#"s() {
 const FISH_COMPLETIONS: &str = r#"# Dynamic completions for shade names
 complete -c shade -n '__fish_seen_subcommand_from cd' -f -a '(command shade list 2>/dev/null)'
 complete -c shade -n '__fish_seen_subcommand_from delete' -f -a '(command shade list 2>/dev/null)'
+complete -c shade -n '__fish_seen_subcommand_from archive' -f -a '(command shade list 2>/dev/null)'
+# unarchive takes an archived shade, so it completes from the archive instead.
+complete -c shade -n '__fish_seen_subcommand_from unarchive' -f -a '(command shade list --archived 2>/dev/null)'
 
 # Copy all shade completions to the s function
 complete -c s -w shade
@@ -110,8 +113,11 @@ _shade_complete() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     case "$prev" in
-        cd|delete)
+        cd|delete|archive)
             COMPREPLY=($(compgen -W "$(command shade list 2>/dev/null)" -- "$cur"))
+            ;;
+        unarchive)
+            COMPREPLY=($(compgen -W "$(command shade list --archived 2>/dev/null)" -- "$cur"))
             ;;
     esac
 }
@@ -125,10 +131,16 @@ _shade_names() {
     names=(${(f)"$(command shade list 2>/dev/null)"})
     compadd -a names
 }
-compdef '_arguments "1:command:(new list cd delete docker init config)" "*::arg:->args"' shade
+_shade_archived_names() {
+    local -a names
+    names=(${(f)"$(command shade list --archived 2>/dev/null)"})
+    compadd -a names
+}
+compdef '_arguments "1:command:(new list cd delete archive unarchive docker init config)" "*::arg:->args"' shade
 _shade() {
     case "$words[2]" in
-        cd|delete) _shade_names ;;
+        cd|delete|archive) _shade_names ;;
+        unarchive) _shade_archived_names ;;
     esac
 }
 compdef _shade shade

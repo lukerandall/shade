@@ -61,10 +61,29 @@ These [Claude Code](https://claude.ai/code) skills under `skills/` drive this, a
   when it's running.
 - **`/shade-close`** — close out a finished shade: verify its acceptance criteria are
   met and the work has landed, then write the `DONE.md` completion marker.
+- **`/shade-archive`** — retire a finished shade without destroying it: forget the
+  workspaces it registered in the source repos and move it to the archive, task
+  record intact.
+- **`/shade-unarchive`** — bring an archived shade back and re-attach its workspaces.
 - **`/shade-tidy`** — survey accumulated shades and clean up the finished ones.
 - **`/shade-promote`** — promote the current session into a shade when a quick
   exploration has grown into real work: links the repos in play and carries the
   conversation so far into the shade's `TASK.md`/`DECISIONS.md`/`LOG.md`.
+
+### Archiving
+
+A finished shade doesn't have to be deleted to stop getting in the way. `shade
+archive` forgets the jj workspaces / git worktrees the shade registered in its
+source repos — the clutter that actually accumulates — drops the `repos/` working
+copies (recreatable from their source), and moves the shade to
+`$SHADES_DIR/archived/<name>` with `TASK.md`/`LOG.md`/`DECISIONS.md`/`tasks/`
+intact. It refuses if a workspace holds uncommitted or unpushed work, unless you
+pass `--force`.
+
+`shade unarchive <name>` reverses it: the shade moves back and each recorded repo is
+re-attached as a fresh workspace, ready for `/shade-orchestrate` to resume from the
+task record. Archived shades are invisible to `shade list`, the TUI, and
+`/shade-dashboard` — use `shade list --archived` to see them.
 
 ### herdr integration
 
@@ -109,6 +128,10 @@ s new                 # Same as above
 s cd <name>           # Switch to an existing shade
 s delete <name>       # Delete a shade and clean up its workspaces
 s list                # List all shades
+
+s archive [name]      # Retire a shade: forget its workspaces, keep its task record
+s unarchive <name>    # Bring an archived shade back and re-attach its workspaces
+s list --archived     # List archived shades
 
 s docker run          # Start or attach to the shade's Docker container
 s docker build        # Pre-build a Docker image with setup baked in

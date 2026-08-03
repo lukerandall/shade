@@ -6,6 +6,24 @@ use super::{Repo, Vcs, discover_repos_by_marker};
 
 pub struct GitVcs;
 
+/// Summarise `git status --porcelain` output as one line per changed path.
+fn describe_porcelain_changes(porcelain_stdout: &str) -> Vec<String> {
+    porcelain_stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("uncommitted change: {}", line.trim()))
+        .collect()
+}
+
+/// Summarise `git log --oneline` output of commits that exist on no remote.
+fn describe_unpushed_commits(log_stdout: &str) -> Vec<String> {
+    log_stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("unpushed commit: {}", line.trim()))
+        .collect()
+}
+
 impl Vcs for GitVcs {
     fn repo_marker(&self) -> &str {
         ".git"
@@ -121,6 +139,37 @@ impl Vcs for GitVcs {
             .output();
 
         Ok(())
+    }
+
+    /// In git both uncommitted changes and unpushed commits are genuinely lost by
+    /// teardown: `git worktree remove --force` deletes the directory and the
+    /// branch `add_workspace` created goes with it. Report both.
+    fn workspace_work_at_risk(&self, workspace_path: &Path) -> Result<Vec<String>> {
+        if !workspace_path.exists() {
+            return Ok(Vec::new());
+        }
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(workspace_path)
+            .output()
+            .context("failed to run git status")?;
+        if !status.status.success() {
+            // Not a git worktree (or git can't read it) — nothing we can assert.
+            return Ok(Vec::new());
+        }
+        let mut at_risk = describe_porcelain_changes(&String::from_utf8_lossy(&status.stdout));
+
+        let log = Command::new("git")
+            .args(["log", "--branches", "--not", "--remotes", "--oneline"])
+            .current_dir(workspace_path)
+            .output()
+            .context("failed to run git log")?;
+        if log.status.success() {
+            at_risk.extend(describe_unpushed_commits(&String::from_utf8_lossy(
+                &log.stdout,
+            )));
+        }
+        Ok(at_risk)
     }
 
     fn install_cmd(&self) -> &str {
@@ -295,5 +344,85 @@ mod tests {
         let vcs = GitVcs;
         let check = vcs.container_workspace_exists_check("/workspace/core");
         assert_eq!(check, "[ -d /workspace/core/.git ]");
+    }
+
+    #[test]
+    fn test_work_at_risk_flags_a_dirty_worktree_and_clears_when_clean() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        init_git_repo_with_commit(&source);
+        let ws_path = tmp.path().join("ws");
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+        let vcs = GitVcs;
+        vcs.add_workspace(&repo, &ws_path, "my-shade").unwrap();
+
+        // A fresh worktree has no uncommitted changes. (The branch it sits on has
+        // no remote, so unpushed-commit reporting is not asserted here.)
+        let clean = vcs.workspace_work_at_risk(&ws_path).unwrap();
+        assert!(
+            !clean.iter().any(|l| l.starts_with("uncommitted change")),
+            "fresh worktree should have no uncommitted changes: {clean:?}"
+        );
+
+        std::fs::write(ws_path.join("scratch.txt"), "work in progress").unwrap();
+        let dirty = vcs.workspace_work_at_risk(&ws_path).unwrap();
+        assert!(
+            dirty
+                .iter()
+                .any(|l| l.contains("uncommitted change") && l.contains("scratch.txt")),
+            "untracked file should be reported as at risk: {dirty:?}"
+        );
+    }
+
+    #[test]
+    fn test_work_at_risk_empty_for_missing_path() {
+        let tmp = TempDir::new().unwrap();
+        let vcs = GitVcs;
+        assert!(
+            vcs.workspace_work_at_risk(&tmp.path().join("nope"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_porcelain_changes_reports_each_entry() {
+        let porcelain = " M src/main.rs\n?? notes.txt\nA  added.rs\n";
+
+        assert_eq!(
+            describe_porcelain_changes(porcelain),
+            vec![
+                "uncommitted change: M src/main.rs",
+                "uncommitted change: ?? notes.txt",
+                "uncommitted change: A  added.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_porcelain_changes_empty_when_clean() {
+        assert!(describe_porcelain_changes("").is_empty());
+        assert!(describe_porcelain_changes("\n").is_empty());
+    }
+
+    #[test]
+    fn test_unpushed_commits_reported() {
+        let log = "4a5b6c7 Add the thing\n0f1e2d3 Fix the other thing\n";
+
+        assert_eq!(
+            describe_unpushed_commits(log),
+            vec![
+                "unpushed commit: 4a5b6c7 Add the thing",
+                "unpushed commit: 0f1e2d3 Fix the other thing",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_unpushed_commits_empty_when_everything_is_pushed() {
+        assert!(describe_unpushed_commits("").is_empty());
     }
 }

@@ -68,6 +68,13 @@ pub trait Vcs {
         workspace_path: &Path,
     ) -> Result<()>;
 
+    /// Describe any work in `workspace_path` that would be lost if the workspace
+    /// were torn down and its directory removed (see D16 — this is the guard on
+    /// `shade archive`). Each entry is a human-readable line to show the user; an
+    /// empty vec means nothing is at risk. Returns empty for a path that isn't a
+    /// workspace, so a missing or clone-mode directory never blocks archiving.
+    fn workspace_work_at_risk(&self, workspace_path: &Path) -> Result<Vec<String>>;
+
     /// Shell command to install this VCS tool (for Docker image builds).
     fn install_cmd(&self) -> &str;
 

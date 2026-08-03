@@ -54,14 +54,25 @@ DONE?, unsaved-work flag, one-line reason):
 Lead with a one-line summary (e.g. "12 shades — 5 safe to remove, 2 need a look, 5
 keep"). If invoked with `--dry-run`, stop here: report only, delete nothing.
 
-## 4. Confirm and delete
+## 4. Confirm, then archive or delete
 
-Ask the user which shades to delete — offer the "safe to remove" set as the
-default, but require an explicit confirmation and let them add or remove entries.
-Never assume. For any shade with unsaved or unpushed work, call it out again and
-get a separate, explicit go-ahead before including it.
+Offer both outcomes, and lead with the reversible one:
 
-Then, for each approved shade, run `shade delete <name>` (this removes the shade's
-workspaces and any Docker container). Report what was deleted and what was kept. Do
-not delete the shade you are currently inside without making that consequence clear
-first.
+- **Archive** (`shade archive <name>`, or `/shade-archive`) — forgets the shade's
+  workspaces in the source repos and moves it to the archive, **keeping** its
+  `TASK.md`/`LOG.md`/`DECISIONS.md`/`tasks/`. This removes the clutter that
+  accumulates in the source repos, and it's reversible with `/shade-unarchive`.
+  Default to this for anything whose record might be worth having later.
+- **Delete** (`shade delete <name>`) — removes the workspaces, the container, and
+  the task record. Irreversible; right for shades whose record has no value.
+
+Ask the user which shades to act on and which of the two to use — offer the "safe to
+remove" set as the default, but require an explicit confirmation and let them add or
+remove entries. Never assume. For any shade with unsaved or unpushed work, call it
+out again and get a separate, explicit go-ahead before including it (note that
+`shade archive` will itself refuse such a shade without `--force`).
+
+Then run the approved command for each shade. Report what was archived, what was
+deleted, and what was kept. Do not archive or delete the shade you are currently
+inside without making that consequence clear first — in both cases the cwd goes
+away.

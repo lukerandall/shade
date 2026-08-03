@@ -131,7 +131,11 @@ enum Command {
         repo: Vec<String>,
     },
     /// List existing shade environments
-    List,
+    List {
+        /// List archived shades instead of active ones
+        #[arg(short = 'a', long)]
+        archived: bool,
+    },
     /// Switch to a shade environment
     Cd {
         /// Name of the shade (e.g. 2026-03-07-my-feature)
@@ -141,6 +145,22 @@ enum Command {
     Delete {
         /// Name of the shade to delete (e.g. 2026-03-07-my-feature)
         name: String,
+    },
+    /// Retire a shade without destroying it: forget its host workspaces and move
+    /// it to the archive, keeping its task record
+    Archive {
+        /// Name of the shade to archive (defaults to the current shade)
+        name: Option<String>,
+
+        /// Archive even when a workspace holds uncommitted or unpushed work
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Bring an archived shade back to life: move it back and re-attach its
+    /// host workspaces
+    Unarchive {
+        /// Name of the archived shade to restore
+        name: Option<String>,
     },
     /// Start or attach to the Docker container for the current shade
     Run,
@@ -635,6 +655,154 @@ fn teardown_host_workspaces(cfg: &shade_config::ShadeConfig, shade_path: &Path, 
     }
 }
 
+/// Collect a description of any work in the shade's host workspaces that would be
+/// lost by tearing them down (see D16). Empty for clone-mode shades, whose `repos/`
+/// entries are self-contained copies that archiving moves rather than removes.
+fn work_at_risk(cfg: &shade_config::ShadeConfig, shade_path: &Path) -> Vec<String> {
+    if cfg.link_mode != LinkMode::Link {
+        return Vec::new();
+    }
+    let vcs = vcs::create_vcs(cfg.vcs);
+    let repos_dir = shade_path.join("repos");
+    let mut at_risk = Vec::new();
+    for repo in &cfg.repos {
+        match vcs.workspace_work_at_risk(&repos_dir.join(&repo.name)) {
+            Ok(items) => at_risk.extend(items.into_iter().map(|i| format!("{}: {i}", repo.name))),
+            // Can't tell — say so rather than implying the workspace is clean.
+            Err(e) => at_risk.push(format!(
+                "{}: could not check for unsaved work: {e}",
+                repo.name
+            )),
+        }
+    }
+    at_risk
+}
+
+/// Archive a shade: stop its container, forget the host workspaces it registered
+/// in the source repos, drop the recreatable `repos/` working copies, and move the
+/// directory into `archived/`. The task record (`TASK.md`/`LOG.md`/`DECISIONS.md`/
+/// `tasks/`) is preserved untouched — that's the whole point versus `delete`.
+///
+/// Refuses up front when a workspace holds work that teardown would lose, unless
+/// `force` is set.
+fn archive_shade(
+    config: &config::Config,
+    environment: &env::Environment,
+    force: bool,
+) -> Result<()> {
+    let cfg = shade_config::ShadeConfig::load(&environment.path)?;
+
+    let at_risk = work_at_risk(&cfg, &environment.path);
+    if !at_risk.is_empty() && !force {
+        for item in &at_risk {
+            eprintln!("  {item}");
+        }
+        anyhow::bail!(
+            "{} has unsaved work in its workspaces (listed above); \
+             commit or push it, or pass --force to archive anyway",
+            environment.name
+        );
+    }
+
+    docker::remove_container(&environment.name)?;
+    // Best-effort: an archived shade is no longer in flight, so close its herdr
+    // workspace. A herdr problem should never block archiving.
+    if let Err(e) = herdr::close_workspace_by_label(&environment.name) {
+        eprintln!("warning: could not close herdr workspace: {e}");
+    }
+
+    let archived = archive_shade_files(&cfg, environment, &config.env_dir)?;
+    println!(
+        "Archived {} to {}",
+        environment.name,
+        archived.path.display()
+    );
+    Ok(())
+}
+
+/// The on-disk half of archiving: forget the host workspaces, drop the
+/// recreatable `repos/` working copies, and move the shade into the archive.
+/// Split out from `archive_shade` so it can be exercised without a Docker or
+/// herdr daemon in the loop.
+fn archive_shade_files(
+    cfg: &shade_config::ShadeConfig,
+    environment: &env::Environment,
+    env_dir: &str,
+) -> Result<env::Environment> {
+    let label = cfg
+        .label
+        .clone()
+        .unwrap_or_else(|| environment.label.clone());
+    teardown_host_workspaces(cfg, &environment.path, &label);
+
+    // Only link-mode working copies are recreatable from `primary_repo_path`, so
+    // only those are dropped; clones move into the archive as they are.
+    if cfg.link_mode == LinkMode::Link {
+        let repos_dir = environment.path.join("repos");
+        if repos_dir.exists() {
+            std::fs::remove_dir_all(&repos_dir).with_context(|| {
+                format!("failed to remove workspaces at {}", repos_dir.display())
+            })?;
+        }
+    }
+
+    env::archive_environment(environment, env_dir)
+}
+
+/// Bring an archived shade back: move it out of `archived/` and re-attach one host
+/// workspace per repo recorded in `shade.toml`, from that repo's saved
+/// `primary_repo_path`. Per-repo failures (a source repo that has since moved or
+/// gone) are reported and skipped rather than failing the whole restore — the
+/// shade itself is already back and usable.
+fn unarchive_shade(config: &config::Config, environment: &env::Environment) -> Result<()> {
+    let cfg = shade_config::ShadeConfig::load(&environment.path)?;
+    let restored = restore_shade_files(&cfg, environment, &config.env_dir)?;
+
+    if config.herdr.enabled {
+        open_shade_in_herdr(&restored.name, &restored.path);
+    }
+
+    println!("{}", restored.path.display());
+    Ok(())
+}
+
+/// The on-disk half of unarchiving: move the shade back and re-attach a workspace
+/// per recorded repo. Split out from `unarchive_shade` for the same reason as
+/// `archive_shade_files`.
+fn restore_shade_files(
+    cfg: &shade_config::ShadeConfig,
+    environment: &env::Environment,
+    env_dir: &str,
+) -> Result<env::Environment> {
+    let restored = env::unarchive_environment(environment, env_dir)?;
+
+    if cfg.link_mode == LinkMode::Link && !cfg.repos.is_empty() {
+        let vcs = vcs::create_vcs(cfg.vcs);
+        let label = cfg.label.clone().unwrap_or_else(|| restored.label.clone());
+        let repos_dir = restored.path.join("repos");
+        std::fs::create_dir_all(&repos_dir).with_context(|| {
+            format!("failed to create repos directory: {}", repos_dir.display())
+        })?;
+        for repo in &cfg.repos {
+            print!("Re-attaching {}... ", repo.name);
+            let source = vcs::Repo {
+                name: repo.name.clone(),
+                path: std::path::PathBuf::from(&repo.primary_repo_path),
+            };
+            if !source.path.exists() {
+                println!("skipped: source repo is gone ({})", repo.primary_repo_path);
+                continue;
+            }
+            match vcs.add_workspace(&source, &repos_dir.join(&repo.name), &label) {
+                Ok(()) => println!("done"),
+                Err(e) => println!("failed: {e}"),
+            }
+        }
+    }
+
+    Ok(restored)
+}
+
 fn delete_shade(environment: &env::Environment) -> Result<()> {
     docker::remove_container(&environment.name)?;
     // Best-effort: close the shade's herdr workspace if one is open. A herdr
@@ -783,10 +951,19 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::List => {
+        Command::List { archived } => {
             let config = config::Config::load()?;
-            let environments = env::list_environments(&config.env_dir)?;
-            if environments.is_empty() {
+            let environments = if archived {
+                env::list_archived(&config.env_dir)?
+            } else {
+                env::list_environments(&config.env_dir)?
+            };
+            if environments.is_empty() && archived {
+                println!(
+                    "No archived shades found in {}",
+                    env::archive_dir(&config.env_dir).display()
+                );
+            } else if environments.is_empty() {
                 println!("No shade environments found in {}", config.env_dir);
             } else {
                 for environment in &environments {
@@ -805,13 +982,29 @@ fn main() -> Result<()> {
         }
         Command::Delete { ref name } => {
             let config = config::Config::load()?;
-            let environments = env::list_environments(&config.env_dir)?;
+            // Archived shades are deletable too, so a shade doesn't become
+            // unreachable by the CLI just because it was archived first.
+            let mut environments = env::list_environments(&config.env_dir)?;
+            environments.extend(env::list_archived(&config.env_dir)?);
             let environment = environments
                 .iter()
                 .find(|e| e.name == *name)
                 .with_context(|| format!("shade not found: {name}"))?;
             delete_shade(environment)?;
             println!("Deleted {name}");
+        }
+        Command::Archive { ref name, force } => {
+            let config = config::Config::load()?;
+            let environment = find_active_shade(&config, name.as_deref())?;
+            archive_shade(&config, &environment, force)?;
+            if name.is_none() {
+                println!("Note: this directory has moved — `cd` somewhere else.");
+            }
+        }
+        Command::Unarchive { ref name } => {
+            let config = config::Config::load()?;
+            let environment = find_archived_shade(&config, name.as_deref())?;
+            unarchive_shade(&config, &environment)?;
         }
         Command::Run | Command::Docker(DockerCommand::Run) => {
             let config = config::Config::load()?;
@@ -977,6 +1170,41 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve an active shade by name, or the shade containing the current directory
+/// when no name is given.
+fn find_active_shade(config: &config::Config, name: Option<&str>) -> Result<env::Environment> {
+    let (name, _) = resolve_shade(config, name)?;
+    env::list_environments(&config.env_dir)?
+        .into_iter()
+        .find(|e| e.name == name)
+        .with_context(|| format!("shade not found: {name}"))
+}
+
+/// Resolve an archived shade by name. With no name, list what's in the archive and
+/// ask for one — there's no "current" archived shade to infer.
+fn find_archived_shade(config: &config::Config, name: Option<&str>) -> Result<env::Environment> {
+    let archived = env::list_archived(&config.env_dir)?;
+    match name {
+        Some(name) => archived
+            .into_iter()
+            .find(|e| e.name == name)
+            .with_context(|| format!("archived shade not found: {name}")),
+        None => {
+            if archived.is_empty() {
+                anyhow::bail!(
+                    "no archived shades in {}",
+                    env::archive_dir(&config.env_dir).display()
+                );
+            }
+            println!("Archived shades:");
+            for environment in &archived {
+                println!("  {}", environment.name);
+            }
+            anyhow::bail!("pass the name of the shade to unarchive");
+        }
+    }
 }
 
 /// Resolve a shade to `(name, path)` from an explicit name or, if none is given,
@@ -1209,6 +1437,176 @@ mod tests {
             !jj_workspace_list(&source).contains("my-shade"),
             "workspace should be forgotten in the source repo after teardown"
         );
+    }
+
+    /// Build a link-mode shade with one real jj workspace, as `shade new` would.
+    /// Returns `(env_dir, environment, source_repo, cfg)`.
+    fn link_mode_shade(
+        tmp: &TempDir,
+        label: &str,
+    ) -> (
+        String,
+        env::Environment,
+        std::path::PathBuf,
+        shade_config::ShadeConfig,
+    ) {
+        let source = tmp.path().join("source");
+        init_jj_repo(&source);
+        let env_dir = tmp.path().join("shades");
+        let env_dir_str = env_dir.to_string_lossy().to_string();
+        let environment = env::create_environment(&env_dir_str, label).unwrap();
+        std::fs::write(environment.path.join("TASK.md"), "the brief").unwrap();
+
+        let vcs = vcs::create_vcs(vcs::VcsKind::Jj);
+        let repo = vcs::Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+        let linked = link_selected_repos(
+            vcs.as_ref(),
+            &environment.path,
+            LinkMode::Link,
+            label,
+            &[repo],
+        );
+        assert_eq!(linked.len(), 1);
+
+        let cfg = shade_config::ShadeConfig {
+            vcs: vcs::VcsKind::Jj,
+            link_mode: LinkMode::Link,
+            label: Some(label.to_string()),
+            repos: linked,
+            ..Default::default()
+        };
+        cfg.save(&environment.path).unwrap();
+        (env_dir_str, environment, source, cfg)
+    }
+
+    #[test]
+    fn archive_forgets_workspaces_drops_repos_and_keeps_the_record() {
+        let tmp = TempDir::new().unwrap();
+        let (env_dir, environment, source, cfg) = link_mode_shade(&tmp, "my-shade");
+        assert!(jj_workspace_list(&source).contains("my-shade"));
+
+        let archived = archive_shade_files(&cfg, &environment, &env_dir).unwrap();
+
+        // The source repo is no longer cluttered with this shade's workspace.
+        assert!(
+            !jj_workspace_list(&source).contains("my-shade"),
+            "archiving should forget the workspace in the source repo"
+        );
+        // The recreatable working copies are gone, but the task record survives.
+        assert!(!archived.path.join("repos").exists());
+        assert_eq!(
+            std::fs::read_to_string(archived.path.join("TASK.md")).unwrap(),
+            "the brief"
+        );
+        assert!(archived.path.join("shade.toml").exists());
+        // And it now lives in the archive, invisible to `shade list`.
+        assert_eq!(
+            archived.path,
+            env::archive_dir(&env_dir).join(&environment.name)
+        );
+        assert!(env::list_environments(&env_dir).unwrap().is_empty());
+        assert_eq!(env::list_archived(&env_dir).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unarchive_moves_back_and_reattaches_workspaces() {
+        let tmp = TempDir::new().unwrap();
+        let (env_dir, environment, source, cfg) = link_mode_shade(&tmp, "my-shade");
+        let archived = archive_shade_files(&cfg, &environment, &env_dir).unwrap();
+
+        let restored = restore_shade_files(&cfg, &archived, &env_dir).unwrap();
+
+        assert_eq!(restored.path, environment.path);
+        assert!(!archived.path.exists());
+        // The workspace is registered in the source repo again, with real contents.
+        assert!(
+            jj_workspace_list(&source).contains("my-shade"),
+            "unarchiving should re-attach the workspace in the source repo"
+        );
+        assert!(restored.path.join("repos/my-repo/.jj").is_dir());
+        // The record came back with it, and it is an active shade once more.
+        assert_eq!(
+            std::fs::read_to_string(restored.path.join("TASK.md")).unwrap(),
+            "the brief"
+        );
+        assert_eq!(env::list_environments(&env_dir).unwrap().len(), 1);
+        assert!(env::list_archived(&env_dir).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unarchive_skips_a_source_repo_that_has_gone_away() {
+        let tmp = TempDir::new().unwrap();
+        let (env_dir, environment, source, cfg) = link_mode_shade(&tmp, "my-shade");
+        let archived = archive_shade_files(&cfg, &environment, &env_dir).unwrap();
+        std::fs::remove_dir_all(&source).unwrap();
+
+        // The shade still comes back — a missing source repo costs you that one
+        // workspace, not the restore.
+        let restored = restore_shade_files(&cfg, &archived, &env_dir).unwrap();
+
+        assert_eq!(restored.path, environment.path);
+        assert!(!restored.path.join("repos/my-repo/.jj").exists());
+        assert_eq!(
+            std::fs::read_to_string(restored.path.join("TASK.md")).unwrap(),
+            "the brief"
+        );
+    }
+
+    #[test]
+    fn archive_keeps_clone_mode_repos_in_place() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().join("shades");
+        let env_dir_str = env_dir.to_string_lossy().to_string();
+        let environment = env::create_environment(&env_dir_str, "cloned").unwrap();
+        std::fs::create_dir_all(environment.path.join("repos/my-repo")).unwrap();
+        std::fs::write(environment.path.join("repos/my-repo/file.txt"), "work").unwrap();
+
+        let cfg = shade_config::ShadeConfig {
+            vcs: vcs::VcsKind::Jj,
+            link_mode: LinkMode::Clone,
+            ..Default::default()
+        };
+        let archived = archive_shade_files(&cfg, &environment, &env_dir_str).unwrap();
+
+        // Clones aren't recreatable from a source repo, so they move with the shade.
+        assert_eq!(
+            std::fs::read_to_string(archived.path.join("repos/my-repo/file.txt")).unwrap(),
+            "work"
+        );
+    }
+
+    #[test]
+    fn work_at_risk_flags_a_dirty_workspace_and_ignores_clone_mode() {
+        let tmp = TempDir::new().unwrap();
+        let (_env_dir, environment, _source, cfg) = link_mode_shade(&tmp, "my-shade");
+
+        assert!(
+            work_at_risk(&cfg, &environment.path).is_empty(),
+            "a freshly linked shade has nothing at risk"
+        );
+
+        std::fs::write(
+            environment.path.join("repos/my-repo/scratch.txt"),
+            "unsaved",
+        )
+        .unwrap();
+        let at_risk = work_at_risk(&cfg, &environment.path);
+        assert!(
+            at_risk
+                .iter()
+                .any(|l| l.starts_with("my-repo:") && l.contains("scratch.txt")),
+            "dirty workspace should be reported per-repo: {at_risk:?}"
+        );
+
+        // Clone-mode shades are moved wholesale, so nothing is ever at risk.
+        let clone_cfg = shade_config::ShadeConfig {
+            link_mode: LinkMode::Clone,
+            ..cfg
+        };
+        assert!(work_at_risk(&clone_cfg, &environment.path).is_empty());
     }
 
     #[test]

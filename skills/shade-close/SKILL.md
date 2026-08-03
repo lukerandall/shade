@@ -66,4 +66,5 @@ It self-gates — `shade` no-ops when herdr isn't running or the shade isn't ope
 a workspace — so just run it and don't let it interrupt the close-out.
 
 Then tell the user the shade is closed and where the work landed. Once `DONE.md`
-exists, the shade is safe to clean up later with `/shade-tidy`.
+exists, the shade is safe to retire — `/shade-archive` puts it away while keeping
+its record (reversible), and `/shade-tidy` sweeps up finished shades in bulk.

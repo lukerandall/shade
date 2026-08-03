@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use jiff::civil::Date;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+/// Subdirectory of the environment directory holding archived shades (see D16).
+pub const ARCHIVE_DIR: &str = "archived";
 
 #[derive(Error, Debug)]
 pub enum EnvError {
@@ -54,14 +57,36 @@ fn parse_env_name(name: &str) -> Option<(Date, String)> {
 /// Silently skips directories that don't match the expected naming pattern.
 /// Returns an empty vec if the directory doesn't exist.
 pub fn list_environments(env_dir: &str) -> Result<Vec<Environment>> {
-    let dir_path = PathBuf::from(env_dir);
+    list_environments_in(&PathBuf::from(env_dir))
+}
 
+/// List the archived shades under `env_dir`.
+///
+/// Archived shades live in the `archived/` subdirectory of the environment
+/// directory (see D16). That name doesn't parse as `YYYY-MM-DD-label`, so
+/// `list_environments` skips it and the archive stays invisible to `shade list`,
+/// the TUI, and anything else enumerating active shades.
+pub fn list_archived(env_dir: &str) -> Result<Vec<Environment>> {
+    list_environments_in(&archive_dir(env_dir))
+}
+
+/// Path of the archive directory for an environment directory.
+pub fn archive_dir(env_dir: &str) -> PathBuf {
+    PathBuf::from(env_dir).join(ARCHIVE_DIR)
+}
+
+/// Scan one directory for validly-named shade directories.
+fn list_environments_in(dir_path: &Path) -> Result<Vec<Environment>> {
     if !dir_path.exists() {
         return Ok(Vec::new());
     }
 
-    let entries = std::fs::read_dir(&dir_path)
-        .with_context(|| format!("failed to read environment directory: {}", env_dir))?;
+    let entries = std::fs::read_dir(dir_path).with_context(|| {
+        format!(
+            "failed to read environment directory: {}",
+            dir_path.display()
+        )
+    })?;
 
     let mut envs: Vec<Environment> = Vec::new();
 
@@ -117,6 +142,51 @@ pub fn create_environment(env_dir: &str, label: &str) -> Result<Environment> {
         label: label.to_string(),
         date: today,
         path: env_path,
+    })
+}
+
+/// Move an active shade into the archive, returning it relocated.
+///
+/// The directory is moved wholesale to `env_dir/archived/<name>`; nothing inside
+/// it is touched. Errors if the shade is missing or already archived.
+pub fn archive_environment(env: &Environment, env_dir: &str) -> Result<Environment> {
+    move_environment(env, &archive_dir(env_dir))
+}
+
+/// Move an archived shade back to the active environment directory.
+pub fn unarchive_environment(env: &Environment, env_dir: &str) -> Result<Environment> {
+    move_environment(env, &PathBuf::from(env_dir))
+}
+
+/// Relocate a shade directory into `target_dir`, keeping its name.
+fn move_environment(env: &Environment, target_dir: &Path) -> Result<Environment> {
+    if !env.path.exists() {
+        return Err(EnvError::NotFound(env.name.clone()).into());
+    }
+
+    let target = target_dir.join(&env.name);
+    if target.exists() {
+        return Err(EnvError::AlreadyExists(target.display().to_string()).into());
+    }
+
+    std::fs::create_dir_all(target_dir).with_context(|| {
+        format!(
+            "failed to create destination directory: {}",
+            target_dir.display()
+        )
+    })?;
+
+    std::fs::rename(&env.path, &target).with_context(|| {
+        format!(
+            "failed to move {} to {}",
+            env.path.display(),
+            target.display()
+        )
+    })?;
+
+    Ok(Environment {
+        path: target,
+        ..env.clone()
     })
 }
 
@@ -273,6 +343,127 @@ mod tests {
         let result = delete_environment(&env);
         assert!(result.is_err());
         let err = result.unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_archive_moves_directory_into_archive_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().to_str().unwrap();
+
+        let env = create_environment(env_dir, "finished").unwrap();
+        fs::write(env.path.join("TASK.md"), "the brief").unwrap();
+
+        let archived = archive_environment(&env, env_dir).unwrap();
+
+        assert!(!env.path.exists());
+        assert_eq!(archived.path, tmp.path().join(ARCHIVE_DIR).join(&env.name));
+        assert!(archived.path.is_dir());
+        // The record files move with it, untouched.
+        assert_eq!(
+            fs::read_to_string(archived.path.join("TASK.md")).unwrap(),
+            "the brief"
+        );
+        // Name, label, and date are preserved.
+        assert_eq!(archived.name, env.name);
+        assert_eq!(archived.label, "finished");
+        assert_eq!(archived.date, env.date);
+    }
+
+    #[test]
+    fn test_archived_shades_are_hidden_from_list_and_shown_by_list_archived() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().to_str().unwrap();
+
+        let kept = create_environment(env_dir, "active").unwrap();
+        let done = create_environment(env_dir, "retired").unwrap();
+        archive_environment(&done, env_dir).unwrap();
+
+        let active = list_environments(env_dir).unwrap();
+        assert_eq!(active.len(), 1, "archive dir must not appear in shade list");
+        assert_eq!(active[0].name, kept.name);
+
+        let archived = list_archived(env_dir).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].name, done.name);
+        assert_eq!(archived[0].label, "retired");
+    }
+
+    #[test]
+    fn test_list_archived_when_no_archive_exists() {
+        let tmp = TempDir::new().unwrap();
+        let archived = list_archived(tmp.path().to_str().unwrap()).unwrap();
+        assert!(archived.is_empty());
+    }
+
+    #[test]
+    fn test_archive_then_unarchive_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().to_str().unwrap();
+
+        let env = create_environment(env_dir, "comeback").unwrap();
+        fs::write(env.path.join("LOG.md"), "history").unwrap();
+        let original_path = env.path.clone();
+
+        let archived = archive_environment(&env, env_dir).unwrap();
+        let restored = unarchive_environment(&archived, env_dir).unwrap();
+
+        assert_eq!(restored.path, original_path);
+        assert!(restored.path.is_dir());
+        assert!(!archived.path.exists());
+        assert_eq!(
+            fs::read_to_string(restored.path.join("LOG.md")).unwrap(),
+            "history"
+        );
+        // It is an ordinary active shade again.
+        let active = list_environments(env_dir).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, env.name);
+        assert!(list_archived(env_dir).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_archive_refuses_when_already_present_in_archive() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().to_str().unwrap();
+
+        let env = create_environment(env_dir, "twice").unwrap();
+        archive_environment(&env, env_dir).unwrap();
+        // Recreate a shade with the same name, then try to archive it again.
+        let again = create_environment(env_dir, "twice").unwrap();
+
+        let err = archive_environment(&again, env_dir).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        // The would-be source is left alone rather than half-moved.
+        assert!(again.path.exists());
+    }
+
+    #[test]
+    fn test_unarchive_refuses_when_active_shade_of_same_name_exists() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().to_str().unwrap();
+
+        let env = create_environment(env_dir, "clash").unwrap();
+        let archived = archive_environment(&env, env_dir).unwrap();
+        create_environment(env_dir, "clash").unwrap();
+
+        let err = unarchive_environment(&archived, env_dir).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        assert!(archived.path.exists());
+    }
+
+    #[test]
+    fn test_archive_nonexistent_returns_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let env_dir = tmp.path().to_str().unwrap();
+        let ghost = Environment {
+            name: "2026-03-05-ghost".to_string(),
+            label: "ghost".to_string(),
+            date: "2026-03-05".parse().unwrap(),
+            path: tmp.path().join("2026-03-05-ghost"),
+        };
+
+        let err = archive_environment(&ghost, env_dir).unwrap_err();
         assert!(err.to_string().contains("does not exist"));
     }
 

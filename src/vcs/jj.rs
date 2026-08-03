@@ -6,6 +6,38 @@ use super::{Repo, Vcs, discover_repos_by_marker};
 
 pub struct JjVcs;
 
+/// Summarise the "Working copy changes:" block of `jj status` output.
+///
+/// The block runs from that header until the first line that isn't a change entry
+/// (`M path`, `A path`, `D path`, …) — in practice the blank line or the
+/// `Working copy  (@) :` / `Parent commit (@-):` summary that follows it. Returns
+/// one line per changed path, or empty when the working copy is clean.
+fn describe_working_copy_changes(status_stdout: &str) -> Vec<String> {
+    let mut changes = Vec::new();
+    let mut in_block = false;
+    for line in status_stdout.lines() {
+        if line.starts_with("Working copy changes:") {
+            in_block = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        // Change entries are indented or start with a single-letter status code
+        // followed by a space; anything else ends the block.
+        let entry = line.trim_end();
+        let is_change = entry
+            .split_once(' ')
+            .is_some_and(|(code, path)| code.len() == 1 && !path.trim().is_empty());
+        if is_change {
+            changes.push(format!("uncommitted change: {}", entry.trim()));
+        } else {
+            break;
+        }
+    }
+    changes
+}
+
 impl Vcs for JjVcs {
     fn repo_marker(&self) -> &str {
         ".jj"
@@ -109,6 +141,29 @@ impl Vcs for JjVcs {
             );
         }
         Ok(())
+    }
+
+    /// Only *uncommitted* working-copy changes are at risk in jj. Running `jj
+    /// status` snapshots the working copy into the `@` commit, and that commit
+    /// lives in the source repo's store — so `jj workspace forget` followed by
+    /// deleting the directory loses no committed work, bookmarked or not. What it
+    /// does lose is anything jj isn't tracking (ignored files, build output, a
+    /// local `.env`), which is why a dirty working copy is reported.
+    fn workspace_work_at_risk(&self, workspace_path: &Path) -> Result<Vec<String>> {
+        if !workspace_path.exists() {
+            return Ok(Vec::new());
+        }
+        let output = Command::new("jj")
+            .args(["status"])
+            .current_dir(workspace_path)
+            .output()
+            .context("failed to run jj status")?;
+        if !output.status.success() {
+            // Not a jj workspace (or jj can't read it) — nothing we can assert.
+            return Ok(Vec::new());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(describe_working_copy_changes(&stdout))
     }
 
     fn install_cmd(&self) -> &str {
@@ -331,5 +386,77 @@ mod tests {
         let vcs = JjVcs;
         let check = vcs.container_workspace_exists_check("/workspace/core");
         assert_eq!(check, "[ -d /workspace/core/.jj ]");
+    }
+
+    #[test]
+    fn test_work_at_risk_flags_a_dirty_workspace_and_clears_when_clean() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        init_jj_repo(&source);
+        let ws_path = tmp.path().join("ws");
+        let repo = Repo {
+            name: "my-repo".to_string(),
+            path: source.clone(),
+        };
+        let vcs = JjVcs;
+        vcs.add_workspace(&repo, &ws_path, "my-shade").unwrap();
+
+        assert!(
+            vcs.workspace_work_at_risk(&ws_path).unwrap().is_empty(),
+            "a fresh workspace has an empty working copy"
+        );
+
+        std::fs::write(ws_path.join("scratch.txt"), "work in progress").unwrap();
+        let dirty = vcs.workspace_work_at_risk(&ws_path).unwrap();
+        assert!(
+            dirty.iter().any(|l| l.contains("scratch.txt")),
+            "new file should be reported as at risk: {dirty:?}"
+        );
+    }
+
+    #[test]
+    fn test_work_at_risk_empty_for_missing_path() {
+        let tmp = TempDir::new().unwrap();
+        let vcs = JjVcs;
+        assert!(
+            vcs.workspace_work_at_risk(&tmp.path().join("nope"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_working_copy_changes_reports_each_changed_path() {
+        let status = "Working copy changes:\nM src/main.rs\nA notes.txt\nD old.rs\nWorking copy  (@) : kntqzsrp 0f1e2d3c (no description set)\nParent commit (@-): rlvkpnrz 4a5b6c7d main | Add thing\n";
+
+        let at_risk = describe_working_copy_changes(status);
+
+        assert_eq!(
+            at_risk,
+            vec![
+                "uncommitted change: M src/main.rs",
+                "uncommitted change: A notes.txt",
+                "uncommitted change: D old.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_working_copy_changes_empty_when_clean() {
+        let status = "The working copy has no changes.\nWorking copy  (@) : kntqzsrp 0f1e2d3c (empty) (no description set)\nParent commit (@-): rlvkpnrz 4a5b6c7d main | Add thing\n";
+
+        assert!(describe_working_copy_changes(status).is_empty());
+    }
+
+    #[test]
+    fn test_working_copy_changes_stops_at_end_of_block() {
+        // A blank line ends the change block; later prose must not be picked up.
+        let status =
+            "Working copy changes:\nM src/main.rs\n\nHint: use `jj new` to start a new change.\n";
+
+        assert_eq!(
+            describe_working_copy_changes(status),
+            vec!["uncommitted change: M src/main.rs"]
+        );
     }
 }
